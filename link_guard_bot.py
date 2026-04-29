@@ -1662,7 +1662,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await fast_msg.edit_text("\n".join(rpt) + f"\n\n🤖 AI评估:\n{ai_r}")
         except: pass
 
+# ==================== Health Check Server for Railway ====================
+def start_health_server():
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+    port = int(os.environ.get('PORT', 8080))
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'OK')
+        def log_message(self, format, *args):
+            pass
+    server = HTTPServer(('0.0.0.0', port), Handler)
+    server.serve_forever()
+
 def main():
+    threading.Thread(target=start_health_server, daemon=True).start()
     threading.Thread(target=update_all_databases, daemon=True).start()
     # 不等待数据库加载，直接启动机器人响应消息
     from telegram.ext import Defaults
