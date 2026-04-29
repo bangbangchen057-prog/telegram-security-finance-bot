@@ -44,7 +44,15 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '8629780885:AAFpEIAnMQglsnz0qzhrblfknqpgd122WH4')
-ai_client = OpenAI()
+
+# ==================== OpenAI Client Initialization ====================
+_OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY') or 'sk-Jj78vPntbRJxMR2NpL8ou7'
+try:
+    ai_client = OpenAI(api_key=_OPENAI_API_KEY)
+    logger.info("OpenAI client initialized successfully.")
+except Exception as _e:
+    ai_client = None
+    logger.warning(f"OpenAI client initialization failed, AI features disabled: {_e}")
 
 # ==================== 数据存储 ====================
 DATA_DIR = Path(os.environ.get('DATA_DIR', '/home/ubuntu/bot_data'))
@@ -1311,6 +1319,8 @@ _ai_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
 def _ai_sync(url, db_f, heu_w):
     try:
+        if ai_client is None:
+            return "AI 功能暂时不可用"
         p = f"分析链接安全风险：\n链接:{url}\n数据库:{'; '.join(db_f) if db_f else '未命中'}\n启发式:{'; '.join(heu_w) if heu_w else '无'}\n给出风险等级和一句话总结（中文简洁）。"
         r = ai_client.chat.completions.create(model="gpt-4.1-nano", messages=[{"role":"user","content":p}], max_tokens=100, temperature=0.3)
         return r.choices[0].message.content.strip()
@@ -1394,6 +1404,8 @@ AI_SYSTEM_PROMPT = """你是 PGone安全卫士 Pro，一个顶级AI智能助手�
 - 保持友好但专业的语气"""
 
 async def ai_chat(chat_id: int, user_message: str) -> str:
+    if ai_client is None:
+        return "AI 功能暂时不可用"
     try:
         if chat_id not in CHAT_HISTORIES:
             CHAT_HISTORIES[chat_id] = []
@@ -1552,6 +1564,8 @@ async def scrape_website(url: str) -> dict:
 
 async def ai_summarize_webpage(scrape_result: dict) -> str:
     """用AI总结网页内容"""
+    if ai_client is None:
+        return "AI 功能暂时不可用"
     try:
         content = scrape_result.get('content', '')[:2000]
         tables = '\n'.join(scrape_result.get('tables', []))[:500]
