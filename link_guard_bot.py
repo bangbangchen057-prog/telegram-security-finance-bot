@@ -2206,6 +2206,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("当前没有活跃的客户对话，发 /exit 退出客服模式。")
         return
     
+    # 待确认记账回复处理
+    if await _handle_booking_confirm(update, context): return
+
     # 优先检查：管理员回复 LiveChat 消息
     if await _handle_admin_livechat_reply(update, context): return
     
@@ -2247,6 +2250,253 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await fast_msg.edit_text("\n".join(rpt) + f"\n\n🤖 AI评估:\n{ai_r}")
         except: pass
 
+# ==================== 图片识别自动记账 ====================
+
+# 授权用户管理
+AUTHORIZED_USERS_FILE = DATA_DIR / 'authorized_users.json'
+authorized_users = set(load_json(AUTHORIZED_USERS_FILE, []))
+
+def save_authorized_users():
+    save_json(AUTHORIZED_USERS_FILE, list(authorized_users))
+
+def is_authorized(user_id: int) -> bool:
+    """Check if user is admin or authorized."""
+    return user_id == ADMIN_CHAT_ID or user_id in authorized_users
+
+# 授权用户管理命令
+async def adduser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != ADMIN_CHAT_ID:
+        await update.message.reply_text("⚠️ 此命令仅管理员可用")
+        return
+    target_id = None
+    # 如果是回复某条消息，取被回复消息的发送者
+    if update.message.reply_to_message:
+        target_id = update.message.reply_to_message.from_user.id
+    elif context.args:
+        try:
+            target_id = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("用法: /adduser <用户ID> 或回复用户消息")
+            return
+    if not target_id:
+        await update.message.reply_text("用法: /adduser <用户ID> 或回复用户消息")
+        return
+    authorized_users.add(target_id)
+    save_authorized_users()
+    await update.message.reply_text(f"✅ 已授权用户 {target_id}")
+
+async def removeuser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != ADMIN_CHAT_ID:
+        await update.message.reply_text("⚠️ 此命令仅管理员可用")
+        return
+    target_id = None
+    if update.message.reply_to_message:
+        target_id = update.message.reply_to_message.from_user.id
+    elif context.args:
+        try:
+            target_id = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("用法: /removeuser <用户ID>")
+            return
+    if not target_id:
+        await update.message.reply_text("用法: /removeuser <用户ID>")
+        return
+    authorized_users.discard(target_id)
+    save_authorized_users()
+    await update.message.reply_text(f"✅ 已移除授权用户 {target_id}")
+
+async def listusers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != ADMIN_CHAT_ID:
+        await update.message.reply_text("⚠️ 此命令仅管理员可用")
+        return
+    if not authorized_users:
+        await update.message.reply_text("👥 当前没有授权用户（管理员默认有权限）")
+        return
+    text = "👥 已授权用户列表：\n━━━━━━━━━━━━━━━━━━━━\n"
+    for uid in authorized_users:
+        text += f"• {uid}\n"
+    await update.message.reply_text(text)
+
+# 图片识别提取转账信息
+async def _analyze_transfer_image(image_bytes: bytes) -> dict:
+    """调用 GPT-4.1-mini 视觉 API 分析转账截图，返回结构化数据"""
+    if ai_client is None:
+        return {'error': 'AI 功能不可用'}
+    import base64
+    b64 = base64.b64encode(image_bytes).decode('utf-8')
+    prompt = """请分析这张转账/支付截图，提取以下信息并以 JSON 格式返回：
+{
+  "amount": 金额（数字，如 500.00）,
+  "currency": "货币（如 USDT、MYR、PHP、USD、BTC 等）",
+  "type": "交易类型，必须是 income 或 expense",
+  "date": "日期 YYYY-MM-DD 格式，如无法确定则为 today",
+  "source": "来源，如 USDT转账、銀行转账、GCash、DuitNow 等",
+  "description": "备注或描述",
+  "confidence": "置信度 high/medium/low"
+}
+如果图片不是转账截图，请返回 {"error": "非转账截图"}。
+只返回 JSON，不要包含其他文字。"""
+    try:
+        resp = ai_client.chat.completions.create(
+            model='gpt-4.1-mini',
+            messages=[{
+                'role': 'user',
+                'content': [
+                    {'type': 'text', 'text': prompt},
+                    {'type': 'image_url', 'image_url': {'url': f'data:image/jpeg;base64,{b64}', 'detail': 'high'}}
+                ]
+            }],
+            max_tokens=500,
+            temperature=0.1
+        )
+        raw = resp.choices[0].message.content.strip()
+        # 清除可能的 markdown 代码块
+        if raw.startswith('```'):
+            raw = raw.split('```')[1]
+            if raw.startswith('json'): raw = raw[4:]
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        logger.error(f"图片分析 JSON 解析失败: {e}, raw={raw[:200]}")
+        return {'error': f'AI 返回格式错误: {str(e)}'}
+    except Exception as e:
+        logger.error(f"图片分析异常: {e}")
+        return {'error': str(e)}
+
+# 将识别结果写入财务系统
+def _record_transaction_from_image(chat_id: int, data: dict) -> str:
+    """将图片识别结果写入财务模块，返回确认消息"""
+    amount = float(data.get('amount', 0))
+    currency = data.get('currency', 'USDT')
+    tx_type = data.get('type', 'income')  # income -> deposit, expense -> withdrawal
+    date_str = data.get('date', 'today')
+    source = data.get('source', '图片记账')
+    description = data.get('description', '')
+
+    if date_str == 'today' or not date_str:
+        date_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        # 尝试标准化日期格式
+        try:
+            dt = datetime.datetime.strptime(date_str, "%Y-%m-%d")
+            date_str = dt.strftime("%Y-%m-%d %H:%M:%S")
+        except:
+            date_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # 选择记账模块：根据货币类型选择马来西亚或菲律宾财务
+    module_name = 'malaysia_finance'
+    ph_currencies = {'PHP', 'GCASH', 'MAYA', 'PAYMAYA', 'BPI', 'BDO'}
+    if currency.upper() in ph_currencies:
+        module_name = 'philippines_finance'
+
+    ud = get_user_finance_module(chat_id, module_name)
+    note = f"{source} - {description}".strip(' -')
+
+    if tx_type == 'income':
+        ud['balance'] += amount
+        transaction = {
+            'type': 'deposit', 'amount': amount, 'method': currency,
+            'fee': 0.0, 'date': date_str, 'note': note
+        }
+        ud['transactions'].append(transaction)
+        save_finance()
+        type_label = '收入'
+    else:
+        ud['balance'] -= amount
+        transaction = {
+            'type': 'withdrawal', 'amount': amount, 'method': currency,
+            'fee': 0.0, 'date': date_str, 'note': note
+        }
+        ud['transactions'].append(transaction)
+        save_finance()
+        type_label = '支出'
+
+    return (
+        f"✅ 已记录：{type_label} {amount:.2f} {currency}\n"
+        f"📌 来源: {source}\n"
+        f"📝 备注: {description}\n"
+        f"📅 日期: {date_str[:10]}\n"
+        f"💰 当前余额: {ud['balance']:.2f}"
+    )
+
+# 图片消息处理器
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """  处理用户发送的图片，识别转账信息并自动记账 """
+    user_id = update.effective_chat.id
+    if not is_authorized(user_id):
+        return  # 非授权用户默默忽略
+
+    if ai_client is None:
+        await update.message.reply_text("❌ AI 功能不可用，无法识别图片")
+        return
+
+    status_msg = await update.message.reply_text("🔍 正在分析图片，请稍候...")
+
+    try:
+        # 获取最高分辨率的图片
+        photo = update.message.photo[-1]
+        file = await context.bot.get_file(photo.file_id)
+        image_bytes = await file.download_as_bytearray()
+
+        # 调用 AI 分析
+        data = await _analyze_transfer_image(bytes(image_bytes))
+
+        if 'error' in data:
+            await status_msg.edit_text(f"❌ 图片分析失败: {data['error']}")
+            return
+
+        amount = data.get('amount')
+        currency = data.get('currency', '?')
+        tx_type = data.get('type', '?')
+        date_val = data.get('date', 'today')
+        source = data.get('source', '未知')
+        description = data.get('description', '')
+        confidence = data.get('confidence', 'low')
+
+        # 如果关键字段缺失或置信度不高，请用户确认
+        if not amount or confidence == 'low' or tx_type not in ('income', 'expense'):
+            confirm_text = (
+                f"🤔 AI 识别结果（置信度: {confidence}），请确认：\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"💰 金额: {amount} {currency}\n"
+                f"📈 类型: {'收入' if tx_type == 'income' else '支出' if tx_type == 'expense' else '?'}\n"
+                f"📌 来源: {source}\n"
+                f"📝 备注: {description}\n"
+                f"📅 日期: {date_val}\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"如确认记账，请回复 ✅\n"
+                f"如信息错误，请回复 ❌ 或手动记账"
+            )
+            await status_msg.edit_text(confirm_text)
+            # 将待确认数据存入 user_data
+            context.user_data['pending_booking'] = data
+            return
+
+        # 置信度足够，直接记账
+        confirm_msg = _record_transaction_from_image(user_id, data)
+        await status_msg.edit_text(confirm_msg)
+
+    except Exception as e:
+        logger.error(f"图片处理异常: {e}")
+        await status_msg.edit_text(f"❌ 处理失败: {str(e)[:100]}")
+
+# 处理用户对待确认记账的回复
+async def _handle_booking_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """  如果用户有待确认记账，处理 ✅/❌ 回复。返回 True 表示已处理。 """
+    pending = context.user_data.get('pending_booking')
+    if not pending:
+        return False
+    text = update.message.text.strip()
+    if text in ('✅', 'yes', '确认', 'ok', 'OK', '是'):
+        confirm_msg = _record_transaction_from_image(update.effective_chat.id, pending)
+        context.user_data.pop('pending_booking', None)
+        await update.message.reply_text(confirm_msg)
+        return True
+    elif text in ('❌', 'no', '取消', '否'):
+        context.user_data.pop('pending_booking', None)
+        await update.message.reply_text("❌ 已取消记账。您可以手动使用 /finance 记账。")
+        return True
+    return False
+
 def main():
     threading.Thread(target=update_all_databases, daemon=True).start()
     # 不等待数据库加载，直接启动机器人响应消息
@@ -2269,7 +2519,11 @@ def main():
     app.add_handler(CommandHandler("addkeyword", add_keyword_command))
     app.add_handler(CommandHandler("delkeyword", del_keyword_command))
     app.add_handler(CommandHandler("listkeywords", list_keywords_command))
+    app.add_handler(CommandHandler("adduser", adduser_command))
+    app.add_handler(CommandHandler("removeuser", removeuser_command))
+    app.add_handler(CommandHandler("listusers", listusers_command))
     app.add_handler(CallbackQueryHandler(finance_callback, pattern="^(select_finance_|mal_fin_|phi_fin_|adv_|mal_pay_|phi_pay_|mal_exp_|phi_exp_|mal_mch|phi_mch|mal_setfee_|phi_setfee_|mal_us_|phi_us_|mal_bet_|phi_bet_|mal_agt_|phi_agt_|main_finance_menu|fin_close)"))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.job_queue.run_repeating(send_security_reminder, interval=3600, first=10)
     app.job_queue.run_repeating(_poll_livechat_messages, interval=8, first=15)  # 每8秒轮询LiveChat新消息
