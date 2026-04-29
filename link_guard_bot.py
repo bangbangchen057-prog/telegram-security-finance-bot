@@ -1372,7 +1372,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔒 安全功能：\n  6层链接检测+AI分析\n"
         f"  威胁库: {total} 条 | 每30分钟同步\n  每小时安全提醒(已订阅)\n\n"
         "💰 财务功能：\n  🇲🇾 马来西亚 | 🇵🇭 菲律宾 | 📢 广告\n  存提款+余额+费用+利润\n  商户管理+投注派奖+代理结算\n\n"
-        "命令：\n  发链接 → 自动检测\n  发消息 → AI对话\n  /finance → 财务管理\n  /ai → AI助手说明\n  /clear → 清除对话记录\n\n"
+        "命令：\n  发链接 → 自动检测\n  发消息 → AI对话\n  /finance → 财务管理\n  /ai → AI助手说明\n  /clear → 清除对话记录\n  /livechat → 联系真人客服\n  /endchat → 结束客服会话\n  /setadmin → 设为管理员(接收客户消息)\n\n"
         "数据本地存储，不收集隐私。"
     )
     await update.message.reply_text(w)
@@ -1665,8 +1665,397 @@ async def handle_scrape_command(update: Update, context: ContextTypes.DEFAULT_TY
     ai_summary = await ai_summarize_webpage(result)
     await update.message.reply_text(f"🤖 AI 智能分析:\n━━━━━━━━━━━━━━━━━━━━\n{ai_summary}")
 
+# ==================== LiveChat 真人客服集成 ====================
+# LiveChat API 配置
+LIVECHAT_ACCOUNT_ID = os.environ.get('LIVECHAT_ACCOUNT_ID', '9340b42a-b5be-4d49-b513-389feeb312fa')
+LIVECHAT_PAT_TOKEN = os.environ.get('LIVECHAT_PAT_TOKEN', 'us-south1:Kvcj7OvRRV5jAvajR3s2mK6c2OM')
+LIVECHAT_ENTITY_ID = os.environ.get('LIVECHAT_ENTITY_ID', 'bangbangchen057@gmail.com')
+LIVECHAT_LICENSE_ID = os.environ.get('LIVECHAT_LICENSE_ID', '100170061')
+ADMIN_CHAT_ID = int(os.environ.get('ADMIN_CHAT_ID', '0'))  # Will be set by /setadmin command
+
+LIVECHAT_API_BASE = 'https://api.livechatinc.com/v3.5/agent/action'
+
+# LiveChat 状态追踪
+livechat_sessions = {}  # telegram_user_id -> {'chat_id': str, 'thread_id': str} (for /livechat users)
+livechat_admin_map = {}  # livechat_chat_id -> {'customer_name': str, 'last_seen_event_id': str, 'tg_message_id': int}
+livechat_reply_map = {}  # telegram_message_id -> livechat_chat_id (admin reply tracking)
+_livechat_known_events = set()  # Set of event IDs already forwarded to admin
+
+def _livechat_headers():
+    """构建 LiveChat API 请求头"""
+    import base64
+    # PAT token format for Basic auth: encode "account_id:pat_token" or use PAT directly
+    # LiveChat v3.5 accepts the PAT token directly after 'Basic '
+    return {
+        'Content-Type': 'application/json',
+        'Authorization': f'Basic {LIVECHAT_PAT_TOKEN}',
+    }
+
+def _livechat_api_call(action, payload=None):
+    """调用 LiveChat Agent API"""
+    url = f'{LIVECHAT_API_BASE}/{action}'
+    try:
+        resp = requests.post(url, headers=_livechat_headers(), json=payload or {}, timeout=15)
+        if resp.status_code == 200:
+            try:
+                return resp.json()
+            except:
+                return {'success': True}
+        else:
+            logger.error(f"LiveChat API {action} failed: {resp.status_code} {resp.text[:200]}")
+            return None
+    except Exception as e:
+        logger.error(f"LiveChat API {action} exception: {e}")
+        return None
+
+def _livechat_send_message(chat_id, text):
+    """向 LiveChat 聊天发送消息"""
+    return _livechat_api_call('send_event', {
+        'chat_id': chat_id,
+        'event': {
+            'type': 'message',
+            'text': text,
+            'visibility': 'all'
+        }
+    })
+
+def _livechat_start_chat():
+    """创建新的 LiveChat 聊天"""
+    return _livechat_api_call('start_chat', {'continuous': True})
+
+def _livechat_deactivate_chat(chat_id):
+    """关闭 LiveChat 聊天"""
+    return _livechat_api_call('deactivate_chat', {'id': chat_id, 'ignore_requester_presence': True})
+
+def _livechat_list_chats():
+    """获取所有活跃聊天列表"""
+    return _livechat_api_call('list_chats', {
+        'filters': {'include_active': True},
+        'limit': 50
+    })
+
+def _livechat_get_chat(chat_id):
+    """获取聊天详情（含最新消息）"""
+    return _livechat_api_call('get_chat', {'chat_id': chat_id})
+
+def _livechat_set_routing_status(status='accepting_chats'):
+    """设置路由状态为接受聊天"""
+    return _livechat_api_call('set_routing_status', {
+        'status': status,
+        'agent_id': LIVECHAT_ENTITY_ID
+    })
+
+# /setadmin 命令 - 设置管理员
+async def setadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global ADMIN_CHAT_ID
+    ADMIN_CHAT_ID = update.effective_chat.id
+    await update.message.reply_text(
+        f"✅ 已将您设为管理员\n"
+        f"管理员 Chat ID: {ADMIN_CHAT_ID}\n\n"
+        f"LiveChat 客户消息将转发到此对话。\n"
+        f"直接回复转发的消息即可回复客户。"
+    )
+    # 设置 agent 为在线状态
+    _livechat_set_routing_status('accepting_chats')
+    logger.info(f"Admin set to chat_id: {ADMIN_CHAT_ID}")
+
+# /livechat 命令 - Telegram 用户请求真人客服
+async def livechat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_chat.id
+    if user_id in livechat_sessions:
+        await update.message.reply_text(
+            "💬 您已在真人客服会话中\n"
+            "直接发送消息即可与客服对话\n"
+            "发送 /endchat 结束会话"
+        )
+        return
+    
+    await update.message.reply_text("🔄 正在为您连接真人客服，请稍候...")
+    
+    # 创建 LiveChat 聊天
+    result = _livechat_start_chat()
+    if not result or 'chat_id' not in result:
+        await update.message.reply_text(
+            "❌ 连接客服失败，请稍后再试\n"
+            "您也可以直接发送消息，AI助手将为您服务"
+        )
+        return
+    
+    chat_id = result['chat_id']
+    thread_id = result.get('thread_id', '')
+    livechat_sessions[user_id] = {'chat_id': chat_id, 'thread_id': thread_id}
+    
+    # 通知管理员
+    if ADMIN_CHAT_ID:
+        try:
+            user = update.effective_user
+            user_name = user.full_name if user else f"用户{user_id}"
+            from telegram import Bot
+            bot = context.bot
+            await bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=f"📞 新的真人客服请求\n"
+                     f"━━━━━━━━━━━━━━━━━━━━\n"
+                     f"用户: {user_name} (ID: {user_id})\n"
+                     f"LiveChat ID: {chat_id}\n"
+                     f"请在 LiveChat 或此处回复"
+            )
+        except Exception as e:
+            logger.error(f"通知管理员失败: {e}")
+    
+    # 发送初始消息到 LiveChat
+    user = update.effective_user
+    user_name = user.full_name if user else f"用户{user_id}"
+    _livechat_send_message(chat_id, f"[Telegram用户 {user_name}] 请求真人客服")
+    
+    await update.message.reply_text(
+        "✅ 已连接真人客服\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "💬 直接发送消息即可与客服对话\n"
+        "📝 发送 /endchat 结束会话\n\n"
+        "客服正在接入，请稍候..."
+    )
+
+# /endchat 命令 - 结束真人客服会话
+async def endchat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_chat.id
+    if user_id not in livechat_sessions:
+        await update.message.reply_text("ℹ️ 您当前没有活跃的客服会话")
+        return
+    
+    session = livechat_sessions.pop(user_id)
+    chat_id = session['chat_id']
+    
+    # 发送结束消息
+    _livechat_send_message(chat_id, "[用户已结束会话]")
+    _livechat_deactivate_chat(chat_id)
+    
+    await update.message.reply_text(
+        "✅ 客服会话已结束\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "感谢您的使用！如需再次联系客服，请发送 /livechat\n"
+        "您也可以继续使用其他功能（AI对话、安全检测、财务管理等）"
+    )
+
+# 处理管理员回复 LiveChat 消息
+async def _handle_admin_livechat_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """检查管理员是否在回复 LiveChat 转发的消息，如果是则转发到 LiveChat。返回 True 表示已处理。"""
+    if not update.message or not update.message.reply_to_message:
+        return False
+    
+    user_id = update.effective_chat.id
+    if user_id != ADMIN_CHAT_ID:
+        return False
+    
+    replied_msg_id = update.message.reply_to_message.message_id
+    
+    # 检查是否回复的是 LiveChat 转发的消息
+    if replied_msg_id not in livechat_reply_map:
+        return False
+    
+    livechat_chat_id = livechat_reply_map[replied_msg_id]
+    reply_text = update.message.text
+    
+    # 发送到 LiveChat
+    result = _livechat_send_message(livechat_chat_id, reply_text)
+    if result:
+        await update.message.reply_text("✅ 已发送到客户")
+    else:
+        await update.message.reply_text("❌ 发送失败，请重试")
+    
+    # 同时检查是否有 Telegram 用户在等待此聊天的回复
+    for tg_user_id, session in livechat_sessions.items():
+        if session['chat_id'] == livechat_chat_id:
+            try:
+                await context.bot.send_message(
+                    chat_id=tg_user_id,
+                    text=f"💬 客服: {reply_text}"
+                )
+            except Exception as e:
+                logger.error(f"转发管理员回复到Telegram用户失败: {e}")
+            break
+    
+    return True
+
+# /reply 命令 - 管理员快速回复 LiveChat
+async def reply_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """管理员使用 /reply <chat_id> <message> 回复 LiveChat 客户"""
+    user_id = update.effective_chat.id
+    if user_id != ADMIN_CHAT_ID:
+        await update.message.reply_text("⚠️ 此命令仅管理员可用")
+        return
+    
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "用法: /reply <LiveChat_Chat_ID> <消息内容>\n"
+            "或者直接回复转发的消息即可"
+        )
+        return
+    
+    chat_id = context.args[0]
+    message_text = ' '.join(context.args[1:])
+    
+    result = _livechat_send_message(chat_id, message_text)
+    if result:
+        await update.message.reply_text(f"✅ 已发送到客户 (Chat: {chat_id[:8]}...)")
+    else:
+        await update.message.reply_text("❌ 发送失败，请检查 Chat ID 是否正确")
+
+# 后台轮询 LiveChat 新消息
+async def _poll_livechat_messages(context: ContextTypes.DEFAULT_TYPE):
+    """定期轮询 LiveChat，将客户新消息转发给管理员"""
+    global ADMIN_CHAT_ID
+    if not ADMIN_CHAT_ID:
+        return
+    
+    try:
+        result = _livechat_list_chats()
+        if not result or 'chats_summary' not in result:
+            return
+        
+        for chat_summary in result['chats_summary']:
+            chat_id = chat_summary.get('id')
+            if not chat_id:
+                continue
+            
+            # 检查是否有活跃线程
+            last_thread = chat_summary.get('last_thread_summary', {})
+            if not last_thread.get('active', False):
+                continue
+            
+            # 获取聊天详情以读取最新消息
+            chat_detail = _livechat_get_chat(chat_id)
+            if not chat_detail or 'thread' not in chat_detail:
+                continue
+            
+            thread = chat_detail['thread']
+            events = thread.get('events', [])
+            
+            # 获取客户信息
+            users = chat_detail.get('users', [])
+            customer_name = "未知客户"
+            for u in users:
+                if u.get('type') == 'customer':
+                    customer_name = u.get('name') or u.get('id', '未知客户')[:12]
+                    break
+            
+            # 处理新消息
+            for event in events:
+                event_id = event.get('id')
+                if not event_id or event_id in _livechat_known_events:
+                    continue
+                
+                # 只转发客户消息（非 agent 发送的）
+                author_id = event.get('author_id', '')
+                if author_id == LIVECHAT_ENTITY_ID:
+                    _livechat_known_events.add(event_id)
+                    continue
+                
+                event_type = event.get('type')
+                if event_type != 'message':
+                    _livechat_known_events.add(event_id)
+                    continue
+                
+                text = event.get('text', '')
+                if not text:
+                    _livechat_known_events.add(event_id)
+                    continue
+                
+                _livechat_known_events.add(event_id)
+                
+                # 转发给管理员
+                try:
+                    forward_text = (
+                        f"💬 [LiveChat 客户 {customer_name}]:\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"{text}\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📋 Chat ID: {chat_id}\n"
+                        f"↩️ 直接回复此消息即可回复客户"
+                    )
+                    sent_msg = await context.bot.send_message(
+                        chat_id=ADMIN_CHAT_ID,
+                        text=forward_text
+                    )
+                    # 记录消息映射，以便管理员回复时知道转发到哪个 LiveChat
+                    livechat_reply_map[sent_msg.message_id] = chat_id
+                    livechat_admin_map[chat_id] = {
+                        'customer_name': customer_name,
+                        'last_seen_event_id': event_id,
+                        'tg_message_id': sent_msg.message_id
+                    }
+                except Exception as e:
+                    logger.error(f"转发LiveChat消息到管理员失败: {e}")
+                
+                # 同时转发给通过 /livechat 连接的 Telegram 用户
+                for tg_user_id, session in livechat_sessions.items():
+                    if session['chat_id'] == chat_id:
+                        try:
+                            await context.bot.send_message(
+                                chat_id=tg_user_id,
+                                text=f"💬 客服: {text}"
+                            )
+                        except Exception as e:
+                            logger.error(f"转发到Telegram用户失败: {e}")
+                        break
+        
+        # 清理过大的已知事件集合（保留最近5000条）
+        if len(_livechat_known_events) > 5000:
+            # 转为列表保留后半部分
+            events_list = list(_livechat_known_events)
+            _livechat_known_events.clear()
+            _livechat_known_events.update(events_list[-2500:])
+    
+    except Exception as e:
+        logger.error(f"LiveChat 轮询异常: {e}")
+
+# 处理 Telegram 用户在 livechat 模式下的消息
+def _is_user_in_livechat(user_id):
+    return user_id in livechat_sessions
+
+async def _forward_to_livechat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """如果用户在 livechat 模式，转发消息到 LiveChat。返回 True 表示已处理。"""
+    user_id = update.effective_chat.id
+    if user_id not in livechat_sessions:
+        return False
+    
+    session = livechat_sessions[user_id]
+    chat_id = session['chat_id']
+    text = update.message.text
+    
+    user = update.effective_user
+    user_name = user.full_name if user else f"用户{user_id}"
+    
+    result = _livechat_send_message(chat_id, f"[{user_name}]: {text}")
+    if not result:
+        await update.message.reply_text("⚠️ 消息发送失败，客服可能已离线。发送 /endchat 结束会话")
+    
+    # 同时转发给管理员
+    if ADMIN_CHAT_ID and ADMIN_CHAT_ID != user_id:
+        try:
+            forward_text = (
+                f"💬 [Telegram 用户 {user_name}] → LiveChat:\n"
+                f"{text}"
+            )
+            sent_msg = await context.bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=forward_text
+            )
+            livechat_reply_map[sent_msg.message_id] = chat_id
+        except Exception as e:
+            logger.error(f"转发用户消息到管理员失败: {e}")
+    
+    return True
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return
+    
+    # 优先检查：管理员回复 LiveChat 消息
+    if await _handle_admin_livechat_reply(update, context): return
+    
+    # 检查用户是否在 livechat 模式
+    if await _forward_to_livechat(update, context): return
+    
     if await handle_finance_input(update, context): return
     text = update.message.text
     urls = URL_REGEX.findall(text)
@@ -1711,10 +2100,15 @@ def main():
     app.add_handler(CommandHandler("finance", main_finance_menu))
     app.add_handler(CommandHandler("ai", ai_command))
     app.add_handler(CommandHandler("clear", clear_chat_command))
-    app.add_handler(CommandHandler("scrape", handle_scrape_command)) # Changed to main_finance_menu
+    app.add_handler(CommandHandler("scrape", handle_scrape_command))
+    app.add_handler(CommandHandler("setadmin", setadmin_command))
+    app.add_handler(CommandHandler("livechat", livechat_command))
+    app.add_handler(CommandHandler("endchat", endchat_command))
+    app.add_handler(CommandHandler("reply", reply_command))
     app.add_handler(CallbackQueryHandler(finance_callback, pattern="^(select_finance_|mal_fin_|phi_fin_|adv_|mal_pay_|phi_pay_|mal_exp_|phi_exp_|mal_mch|phi_mch|mal_setfee_|phi_setfee_|mal_us_|phi_us_|mal_bet_|phi_bet_|mal_agt_|phi_agt_|main_finance_menu|fin_close)"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.job_queue.run_repeating(send_security_reminder, interval=3600, first=10)
+    app.job_queue.run_repeating(_poll_livechat_messages, interval=8, first=15)  # 每8秒轮询LiveChat新消息
     logger.info("Bot started...")
     print("Bot started...", flush=True)
     app.run_polling(drop_pending_updates=True, poll_interval=0.5, timeout=10, allowed_updates=Update.ALL_TYPES)
