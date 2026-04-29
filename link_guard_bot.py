@@ -1685,7 +1685,9 @@ _livechat_known_events = set()  # Set of event IDs already forwarded to admin
 KEYWORDS_FILE = DATA_DIR / 'livechat_keywords.json'
 livechat_keywords = load_json(KEYWORDS_FILE, {
     "忘记密码": "您好，如需重置密码，请联系我们的whatsapp客服专员为您处理。感谢您的支持！（Hello, if you need to reset your password, please contact our WhatsApp customer support agent for assistance. Thank you for your support!）",
-    "forgot password": "您好，如需重置密码，请联系我们的whatsapp客服专员为您处理。感谢您的支持！（Hello, if you need to reset your password, please contact our WhatsApp customer support agent for assistance. Thank you for your support!）"
+    "forgot password": "您好，如需重置密码，请联系我们的whatsapp客服专员为您处理。感谢您的支持！（Hello, if you need to reset your password, please contact our WhatsApp customer support agent for assistance. Thank you for your support!）",
+    "忘记提款密码": "您好，提款密码忘记，请联系我们的whatsapp官方客服为您验证并重置。（Hello, if you have forgotten your withdrawal password, please contact our official WhatsApp customer support for verification and assistance with resetting it.）",
+    "i forgot my withdrawal password": "您好，提款密码忘记，请联系我们的whatsapp官方客服为您验证并重置。（Hello, if you have forgotten your withdrawal password, please contact our official WhatsApp customer support for verification and assistance with resetting it.）"
 })
 
 def save_keywords():
