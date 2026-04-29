@@ -1680,6 +1680,8 @@ livechat_sessions = {}  # telegram_user_id -> {'chat_id': str, 'thread_id': str}
 livechat_admin_map = {}  # livechat_chat_id -> {'customer_name': str, 'last_seen_event_id': str, 'tg_message_id': int}
 livechat_reply_map = {}  # telegram_message_id -> livechat_chat_id (admin reply tracking)
 _livechat_known_events = set()  # Set of event IDs already forwarded to admin
+admin_cs_mode = False  # 管理员客服模式开关
+admin_cs_target_chat = None  # 当前客服模式对应的 LiveChat chat_id
 
 # 关键词自动回复配置
 KEYWORDS_FILE = DATA_DIR / 'livechat_keywords.json'
@@ -1948,6 +1950,56 @@ async def list_keywords_command(update: Update, context: ContextTypes.DEFAULT_TY
         text += f"• {kw} → {reply[:50]}...\n"
     await update.message.reply_text(text)
 
+# /cs 命令 - 进入客服模式
+async def cs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global admin_cs_mode, admin_cs_target_chat
+    if update.effective_chat.id != ADMIN_CHAT_ID:
+        await update.message.reply_text("⚠️ 此命令仅管理员可用")
+        return
+    
+    # 找到最新的活跃 LiveChat 聊天
+    result = _livechat_list_chats()
+    active_chat_id = None
+    active_customer = "未知客户"
+    if result and 'chats_summary' in result:
+        for cs in result['chats_summary']:
+            if cs.get('last_thread_summary', {}).get('active', False):
+                active_chat_id = cs.get('id')
+                for u in cs.get('users', []):
+                    if u.get('type') == 'customer':
+                        active_customer = u.get('name') or u.get('id', '未知客户')[:12]
+                        break
+                break
+    
+    if not active_chat_id:
+        # 也检查 livechat_admin_map 中是否有最近的聊天
+        if livechat_admin_map:
+            active_chat_id = list(livechat_admin_map.keys())[-1]
+            active_customer = livechat_admin_map[active_chat_id].get('customer_name', '未知客户')
+    
+    if not active_chat_id:
+        await update.message.reply_text("当前没有活跃的客户对话")
+        return
+    
+    admin_cs_mode = True
+    admin_cs_target_chat = active_chat_id
+    await update.message.reply_text(
+        f"✅ 已进入客服模式\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 当前客户: {active_customer}\n"
+        f"💬 您的消息将直接发送给客户\n"
+        f"发 /exit 退出客服模式"
+    )
+
+# /exit 命令 - 退出客服模式
+async def exit_cs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global admin_cs_mode, admin_cs_target_chat
+    if update.effective_chat.id != ADMIN_CHAT_ID:
+        return
+    admin_cs_mode = False
+    admin_cs_target_chat = None
+    await update.message.reply_text("✅ 已退出客服模式，已恢复正常功能。")
+
 # /reply 命令 - 管理员快速回复 LiveChat
 async def reply_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """管理员使用 /reply <chat_id> <message> 回复 LiveChat 客户"""
@@ -2141,6 +2193,19 @@ async def _forward_to_livechat(update: Update, context: ContextTypes.DEFAULT_TYP
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return
     
+    user_id = update.effective_chat.id
+    text = update.message.text
+    
+    # 管理员客服模式：直接将消息发送给客户（命令不拦截）
+    if admin_cs_mode and user_id == ADMIN_CHAT_ID:
+        if admin_cs_target_chat:
+            result = _livechat_send_message(admin_cs_target_chat, text)
+            if not result:
+                await update.message.reply_text("❌ 发送失败，客户可能已离线。发 /exit 退出客服模式。")
+        else:
+            await update.message.reply_text("当前没有活跃的客户对话，发 /exit 退出客服模式。")
+        return
+    
     # 优先检查：管理员回复 LiveChat 消息
     if await _handle_admin_livechat_reply(update, context): return
     
@@ -2196,6 +2261,8 @@ def main():
     app.add_handler(CommandHandler("livechat", livechat_command))
     app.add_handler(CommandHandler("endchat", endchat_command))
     app.add_handler(CommandHandler("reply", reply_command))
+    app.add_handler(CommandHandler("cs", cs_command))
+    app.add_handler(CommandHandler("exit", exit_cs_command))
     app.add_handler(CommandHandler("ak", add_keyword_command))
     app.add_handler(CommandHandler("dk", del_keyword_command))
     app.add_handler(CommandHandler("lk", list_keywords_command))
