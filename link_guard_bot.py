@@ -1681,6 +1681,16 @@ livechat_admin_map = {}  # livechat_chat_id -> {'customer_name': str, 'last_seen
 livechat_reply_map = {}  # telegram_message_id -> livechat_chat_id (admin reply tracking)
 _livechat_known_events = set()  # Set of event IDs already forwarded to admin
 
+# 关键词自动回复配置
+KEYWORDS_FILE = DATA_DIR / 'livechat_keywords.json'
+livechat_keywords = load_json(KEYWORDS_FILE, {
+    "忘记密码": "您好，如需重置密码，请联系我们的whatsapp客服专员为您处理。感谢您的支持！（Hello, if you need to reset your password, please contact our WhatsApp customer support agent for assistance. Thank you for your support!）",
+    "forgot password": "您好，如需重置密码，请联系我们的whatsapp客服专员为您处理。感谢您的支持！（Hello, if you need to reset your password, please contact our WhatsApp customer support agent for assistance. Thank you for your support!）"
+})
+
+def save_keywords():
+    save_json(KEYWORDS_FILE, livechat_keywords)
+
 def _livechat_headers():
     """构建 LiveChat API 请求头"""
     import base64
@@ -1877,6 +1887,57 @@ async def _handle_admin_livechat_reply(update: Update, context: ContextTypes.DEF
     
     return True
 
+# 关键词管理命令
+async def add_keyword_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/ak 关键词 ||| 回复内容"""
+    if update.effective_chat.id != ADMIN_CHAT_ID:
+        await update.message.reply_text("⚠️ 此命令仅管理员可用")
+        return
+    
+    text = ' '.join(context.args)
+    if " ||| " not in text:
+        await update.message.reply_text("用法: /ak 关键词 ||| 回复内容")
+        return
+    
+    kw, reply = text.split(" ||| ", 1)
+    kw = kw.strip().lower()
+    livechat_keywords[kw] = reply.strip()
+    save_keywords()
+    await update.message.reply_text(f"✅ 已添加关键词: {kw}")
+
+async def del_keyword_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/dk 关键词"""
+    if update.effective_chat.id != ADMIN_CHAT_ID:
+        await update.message.reply_text("⚠️ 此命令仅管理员可用")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("用法: /dk 关键词")
+        return
+    
+    kw = ' '.join(context.args).strip().lower()
+    if kw in livechat_keywords:
+        del livechat_keywords[kw]
+        save_keywords()
+        await update.message.reply_text(f"✅ 已删除关键词: {kw}")
+    else:
+        await update.message.reply_text(f"❌ 未找到关键词: {kw}")
+
+async def list_keywords_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/lk"""
+    if update.effective_chat.id != ADMIN_CHAT_ID:
+        await update.message.reply_text("⚠️ 此命令仅管理员可用")
+        return
+    
+    if not livechat_keywords:
+        await update.message.reply_text("📝 当前没有设置关键词回复")
+        return
+    
+    text = "📝 当前关键词回复列表：\n━━━━━━━━━━━━━━━━━━━━\n"
+    for kw, reply in livechat_keywords.items():
+        text += f"• {kw} → {reply[:50]}...\n"
+    await update.message.reply_text(text)
+
 # /reply 命令 - 管理员快速回复 LiveChat
 async def reply_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """管理员使用 /reply <chat_id> <message> 回复 LiveChat 客户"""
@@ -1963,6 +2024,26 @@ async def _poll_livechat_messages(context: ContextTypes.DEFAULT_TYPE):
                 
                 _livechat_known_events.add(event_id)
                 
+                # 检查关键词自动回复
+                matched_reply = None
+                text_lower = text.lower()
+                for kw, reply in livechat_keywords.items():
+                    if kw in text_lower:
+                        matched_reply = reply
+                        break
+                
+                if matched_reply:
+                    _livechat_send_message(chat_id, f"[自动回复]: {matched_reply}")
+                    # 仍然通知管理员，但标注已自动回复
+                    if ADMIN_CHAT_ID:
+                        try:
+                            await context.bot.send_message(
+                                chat_id=ADMIN_CHAT_ID,
+                                text=f"🤖 [自动回复] 对客户 {customer_name}:\n关键词匹配: {text}\n回复内容: {matched_reply}"
+                            )
+                        except: pass
+                    continue
+
                 # 转发给管理员
                 try:
                     forward_text = (
@@ -2105,6 +2186,12 @@ def main():
     app.add_handler(CommandHandler("livechat", livechat_command))
     app.add_handler(CommandHandler("endchat", endchat_command))
     app.add_handler(CommandHandler("reply", reply_command))
+    app.add_handler(CommandHandler("ak", add_keyword_command))
+    app.add_handler(CommandHandler("dk", del_keyword_command))
+    app.add_handler(CommandHandler("lk", list_keywords_command))
+    app.add_handler(CommandHandler("addkeyword", add_keyword_command))
+    app.add_handler(CommandHandler("delkeyword", del_keyword_command))
+    app.add_handler(CommandHandler("listkeywords", list_keywords_command))
     app.add_handler(CallbackQueryHandler(finance_callback, pattern="^(select_finance_|mal_fin_|phi_fin_|adv_|mal_pay_|phi_pay_|mal_exp_|phi_exp_|mal_mch|phi_mch|mal_setfee_|phi_setfee_|mal_us_|phi_us_|mal_bet_|phi_bet_|mal_agt_|phi_agt_|main_finance_menu|fin_close)"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.job_queue.run_repeating(send_security_reminder, interval=3600, first=10)
