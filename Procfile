@@ -1,1 +1,1 @@
-web: python link_guard_bot.py
+worker: python link_guard_bot.py

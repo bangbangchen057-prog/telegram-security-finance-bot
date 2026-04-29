@@ -14,6 +14,32 @@ from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes, CallbackQueryHandler
 
+# ==================== Health Check Server (starts immediately, before any bot init) ====================
+def _start_health_server():
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+    _port = int(os.environ.get('PORT', 8080))
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'OK')
+        def do_POST(self):
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'OK')
+        def do_HEAD(self):
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain')
+            self.end_headers()
+        def log_message(self, format, *args):
+            pass  # suppress access logs
+    _server = HTTPServer(('0.0.0.0', _port), _Handler)
+    _server.serve_forever()
+
+threading.Thread(target=_start_health_server, daemon=True).start()
+
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -1662,23 +1688,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await fast_msg.edit_text("\n".join(rpt) + f"\n\n🤖 AI评估:\n{ai_r}")
         except: pass
 
-# ==================== Health Check Server for Railway ====================
-def start_health_server():
-    from http.server import HTTPServer, BaseHTTPRequestHandler
-    port = int(os.environ.get('PORT', 8080))
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/plain')
-            self.end_headers()
-            self.wfile.write(b'OK')
-        def log_message(self, format, *args):
-            pass
-    server = HTTPServer(('0.0.0.0', port), Handler)
-    server.serve_forever()
-
 def main():
-    threading.Thread(target=start_health_server, daemon=True).start()
     threading.Thread(target=update_all_databases, daemon=True).start()
     # 不等待数据库加载，直接启动机器人响应消息
     from telegram.ext import Defaults
