@@ -1687,7 +1687,11 @@ livechat_keywords = load_json(KEYWORDS_FILE, {
     "忘记密码": "您好，如需重置密码，请联系我们的whatsapp客服专员为您处理。感谢您的支持！（Hello, if you need to reset your password, please contact our WhatsApp customer support agent for assistance. Thank you for your support!）",
     "forgot password": "您好，如需重置密码，请联系我们的whatsapp客服专员为您处理。感谢您的支持！（Hello, if you need to reset your password, please contact our WhatsApp customer support agent for assistance. Thank you for your support!）",
     "忘记提款密码": "您好，提款密码忘记，请联系我们的whatsapp官方客服为您验证并重置。（Hello, if you have forgotten your withdrawal password, please contact our official WhatsApp customer support for verification and assistance with resetting it.）",
-    "i forgot my withdrawal password": "您好，提款密码忘记，请联系我们的whatsapp官方客服为您验证并重置。（Hello, if you have forgotten your withdrawal password, please contact our official WhatsApp customer support for verification and assistance with resetting it.）"
+    "i forgot my withdrawal password": "您好，提款密码忘记，请联系我们的whatsapp官方客服为您验证并重置。（Hello, if you have forgotten your withdrawal password, please contact our official WhatsApp customer support for verification and assistance with resetting it.）",
+    "提款还没到账": "您好，由于提款人数较多，请您耐心等待！我们财务人员正在加急为您处理。（Hello, due to the high volume of withdrawal requests, we kindly ask for your patience. Our finance team is expediting the processing for you.）",
+    "the withdrawal has not been received yet": "您好，由于提款人数较多，请您耐心等待！我们财务人员正在加急为您处理。（Hello, due to the high volume of withdrawal requests, we kindly ask for your patience. Our finance team is expediting the processing for you.）",
+    "存款没到账": "您好，如果您的存款未到账，请您联系 whatsapp 客服专员提供您的转帐单据和您的付款人姓名为您查询哦（Hello, if your deposit has not been credited, please contact our WhatsApp customer support and provide your transfer receipt along with the payer's name so we can assist you in checking.）",
+    "my deposit hasn't gone through yet": "您好，如果您的存款未到账，请您联系 whatsapp 客服专员提供您的转帐单据和您的付款人姓名为您查询哦（Hello, if your deposit has not been credited, please contact our WhatsApp customer support and provide your transfer receipt along with the payer's name so we can assist you in checking.）"
 })
 
 def save_keywords():
