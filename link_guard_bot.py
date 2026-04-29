@@ -2208,8 +2208,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("当前没有活跃的客户对话，发 /exit 退出客服模式。")
         return
     
-    # 待确认记账回复处理
-    if await _handle_booking_confirm(update, context): return
+    # 文字记账处理（入款/出款）
+    if await _handle_bill_input(update, context): return
 
     # 优先检查：管理员回复 LiveChat 消息
     if await _handle_admin_livechat_reply(update, context): return
@@ -2319,185 +2319,204 @@ async def listusers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"• {uid}\n"
     await update.message.reply_text(text)
 
-# 图片识别提取转账信息
-async def _analyze_transfer_image(image_bytes: bytes) -> dict:
-    """调用 GPT-4.1-mini 视觉 API 分析转账截图，返回结构化数据"""
-    if ai_client is None:
-        return {'error': 'AI 功能不可用'}
-    import base64
-    b64 = base64.b64encode(image_bytes).decode('utf-8')
-    prompt = """请分析这张转账/支付截图，提取以下信息并以 JSON 格式返回：
-{
-  "amount": 金额（数字，如 500.00）,
-  "currency": "货币（如 USDT、MYR、PHP、USD、BTC 等）",
-  "type": "交易类型，必须是 income 或 expense",
-  "date": "日期 YYYY-MM-DD 格式，如无法确定则为 today",
-  "source": "来源，如 USDT转账、銀行转账、GCash、DuitNow 等",
-  "description": "备注或描述",
-  "confidence": "置信度 high/medium/low"
-}
-如果图片不是转账截图，请返回 {"error": "非转账截图"}。
-只返回 JSON，不要包含其他文字。"""
-    try:
-        resp = ai_client.chat.completions.create(
-            model='gpt-4.1-mini',
-            messages=[{
-                'role': 'user',
-                'content': [
-                    {'type': 'text', 'text': prompt},
-                    {'type': 'image_url', 'image_url': {'url': f'data:image/jpeg;base64,{b64}', 'detail': 'high'}}
-                ]
-            }],
-            max_tokens=500,
-            temperature=0.1
-        )
-        raw = resp.choices[0].message.content.strip()
-        # 清除可能的 markdown 代码块
-        if raw.startswith('```'):
-            raw = raw.split('```')[1]
-            if raw.startswith('json'): raw = raw[4:]
-        return json.loads(raw)
-    except json.JSONDecodeError as e:
-        logger.error(f"图片分析 JSON 解析失败: {e}, raw={raw[:200]}")
-        return {'error': f'AI 返回格式错误: {str(e)}'}
-    except Exception as e:
-        logger.error(f"图片分析异常: {e}")
-        return {'error': str(e)}
+# ==================== 文字记账功能 ====================
+BILL_FILE = DATA_DIR / 'bill_records.json'
+bill_records = load_json(BILL_FILE, [])
 
-# 将识别结果写入财务系统
-def _record_transaction_from_image(chat_id: int, data: dict) -> str:
-    """将图片识别结果写入财务模块，返回确认消息"""
-    amount = float(data.get('amount', 0))
-    currency = data.get('currency', 'USDT')
-    tx_type = data.get('type', 'income')  # income -> deposit, expense -> withdrawal
-    date_str = data.get('date', 'today')
-    source = data.get('source', '图片记账')
-    description = data.get('description', '')
+def save_bill():
+    save_json(BILL_FILE, bill_records)
 
-    if date_str == 'today' or not date_str:
-        date_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+def _parse_bill_text(text: str) -> dict:
+    """
+    解析记账文本，支持格式：
+    - 入款 USDT 500
+    - 入 USDT 500
+    - 出款 银行 1000
+    - 出 银行 1000
+    - 入款 500 备注：客户A
+    - 出款 1000 备注：提现
+    返回 dict 或 None
+    """
+    text = text.strip()
+    # 判断入款/出款
+    tx_type = None
+    if text.startswith(('入款', '入账')):
+        tx_type = 'income'
+        text = text[2:].strip()
+    elif text.startswith('入'):
+        tx_type = 'income'
+        text = text[1:].strip()
+    elif text.startswith(('出款', '出账')):
+        tx_type = 'expense'
+        text = text[2:].strip()
+    elif text.startswith('出'):
+        tx_type = 'expense'
+        text = text[1:].strip()
     else:
-        # 尝试标准化日期格式
+        return None
+
+    # 提取备注
+    note = ''
+    if '备注：' in text:
+        parts = text.split('备注：', 1)
+        text = parts[0].strip()
+        note = parts[1].strip()
+    elif '备注:' in text:
+        parts = text.split('备注:', 1)
+        text = parts[0].strip()
+        note = parts[1].strip()
+
+    # 解析渠道和金额
+    parts = text.split()
+    channel = ''
+    amount = None
+
+    if len(parts) >= 2:
+        # 尝试: 渠道 金额 或 金额 渠道
         try:
-            dt = datetime.datetime.strptime(date_str, "%Y-%m-%d")
-            date_str = dt.strftime("%Y-%m-%d %H:%M:%S")
-        except:
-            date_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    # 选择记账模块：根据货币类型选择马来西亚或菲律宾财务
-    module_name = 'malaysia_finance'
-    ph_currencies = {'PHP', 'GCASH', 'MAYA', 'PAYMAYA', 'BPI', 'BDO'}
-    if currency.upper() in ph_currencies:
-        module_name = 'philippines_finance'
-
-    ud = get_user_finance_module(chat_id, module_name)
-    note = f"{source} - {description}".strip(' -')
-
-    if tx_type == 'income':
-        ud['balance'] += amount
-        transaction = {
-            'type': 'deposit', 'amount': amount, 'method': currency,
-            'fee': 0.0, 'date': date_str, 'note': note
-        }
-        ud['transactions'].append(transaction)
-        save_finance()
-        type_label = '收入'
+            amount = float(parts[-1])
+            channel = ' '.join(parts[:-1])
+        except ValueError:
+            try:
+                amount = float(parts[0])
+                channel = ' '.join(parts[1:])
+            except ValueError:
+                return None
+    elif len(parts) == 1:
+        try:
+            amount = float(parts[0])
+            channel = 'USDT'  # 默认渠道
+        except ValueError:
+            return None
     else:
-        ud['balance'] -= amount
-        transaction = {
-            'type': 'withdrawal', 'amount': amount, 'method': currency,
-            'fee': 0.0, 'date': date_str, 'note': note
-        }
-        ud['transactions'].append(transaction)
-        save_finance()
-        type_label = '支出'
+        return None
 
-    return (
-        f"✅ 已记录：{type_label} {amount:.2f} {currency}\n"
-        f"📌 来源: {source}\n"
-        f"📝 备注: {description}\n"
-        f"📅 日期: {date_str[:10]}\n"
-        f"💰 当前余额: {ud['balance']:.2f}"
-    )
+    if amount is None or amount <= 0:
+        return None
 
-# 图片消息处理器
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """  处理用户发送的图片，识别转账信息并自动记账 """
+    return {
+        'type': tx_type,
+        'amount': amount,
+        'channel': channel or 'USDT',
+        'note': note
+    }
+
+async def _handle_bill_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """检查消息是否为记账格式，如果是则记录并回复。返回 True 表示已处理。"""
     user_id = update.effective_chat.id
     if not is_authorized(user_id):
-        return  # 非授权用户默默忽略
+        return False
 
-    if ai_client is None:
-        await update.message.reply_text("❌ AI 功能不可用，无法识别图片")
+    text = update.message.text.strip()
+    # 快速检查是否以入/出开头
+    if not text.startswith(('入', '出')):
+        return False
+
+    data = _parse_bill_text(text)
+    if not data:
+        return False
+
+    # 记录到 bill_records
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    record = {
+        'type': data['type'],
+        'amount': data['amount'],
+        'channel': data['channel'],
+        'note': data['note'],
+        'date': now_str,
+        'user_id': user_id
+    }
+    bill_records.append(record)
+    save_bill()
+
+    type_label = '🟢 入款' if data['type'] == 'income' else '🔴 出款'
+    reply = (
+        f"✅ 记账成功\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"{type_label}\n"
+        f"💰 金额: {data['amount']:.2f}\n"
+        f"🏛️ 渠道: {data['channel']}\n"
+        f"📅 时间: {now_str}\n"
+    )
+    if data['note']:
+        reply += f"📝 备注: {data['note']}\n"
+
+    # 计算今日汇总
+    today = datetime.datetime.now().strftime("%Y-%m-%d")
+    today_in = sum(r['amount'] for r in bill_records if r['date'][:10] == today and r['type'] == 'income')
+    today_out = sum(r['amount'] for r in bill_records if r['date'][:10] == today and r['type'] == 'expense')
+    reply += f"━━━━━━━━━━━━━━━━━━━━\n今日入款: {today_in:.2f} | 出款: {today_out:.2f} | 净额: {today_in - today_out:.2f}"
+
+    await update.message.reply_text(reply)
+    return True
+
+# /bill 命令 - 今日账单汇总
+async def bill_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_chat.id
+    if not is_authorized(user_id):
+        await update.message.reply_text("⚠️ 您没有记账权限")
         return
 
-    status_msg = await update.message.reply_text("🔍 正在分析图片，请稍候...")
+    today = datetime.datetime.now().strftime("%Y-%m-%d")
+    today_records = [r for r in bill_records if r['date'][:10] == today]
 
-    try:
-        # 获取最高分辨率的图片
-        photo = update.message.photo[-1]
-        file = await context.bot.get_file(photo.file_id)
-        image_bytes = await file.download_as_bytearray()
+    if not today_records:
+        await update.message.reply_text(f"📊 今日 ({today}) 暂无记账记录")
+        return
 
-        # 调用 AI 分析
-        data = await _analyze_transfer_image(bytes(image_bytes))
+    total_in = sum(r['amount'] for r in today_records if r['type'] == 'income')
+    total_out = sum(r['amount'] for r in today_records if r['type'] == 'expense')
+    net = total_in - total_out
 
-        if 'error' in data:
-            await status_msg.edit_text(f"❌ 图片分析失败: {data['error']}")
-            return
+    text = (
+        f"📊 今日账单汇总 ({today})\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🟢 总入款: {total_in:.2f}\n"
+        f"🔴 总出款: {total_out:.2f}\n"
+        f"💰 净额: {net:.2f}\n"
+        f"📝 笔数: {len(today_records)}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+    )
+    for r in today_records[-20:]:
+        icon = '🟢' if r['type'] == 'income' else '🔴'
+        note_str = f" ({r['note']})" if r.get('note') else ''
+        text += f"{icon} {r['amount']:.2f} {r['channel']}{note_str} [{r['date'][11:16]}]\n"
 
-        amount = data.get('amount')
-        currency = data.get('currency', '?')
-        tx_type = data.get('type', '?')
-        date_val = data.get('date', 'today')
-        source = data.get('source', '未知')
-        description = data.get('description', '')
-        confidence = data.get('confidence', 'low')
+    await update.message.reply_text(text)
 
-        # 如果关键字段缺失或置信度不高，请用户确认
-        if not amount or confidence == 'low' or tx_type not in ('income', 'expense'):
-            confirm_text = (
-                f"🤔 AI 识别结果（置信度: {confidence}），请确认：\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"💰 金额: {amount} {currency}\n"
-                f"📈 类型: {'收入' if tx_type == 'income' else '支出' if tx_type == 'expense' else '?'}\n"
-                f"📌 来源: {source}\n"
-                f"📝 备注: {description}\n"
-                f"📅 日期: {date_val}\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"如确认记账，请回复 ✅\n"
-                f"如信息错误，请回复 ❌ 或手动记账"
-            )
-            await status_msg.edit_text(confirm_text)
-            # 将待确认数据存入 user_data
-            context.user_data['pending_booking'] = data
-            return
+# /billall 命令 - 所有历史记录
+async def billall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_chat.id
+    if not is_authorized(user_id):
+        await update.message.reply_text("⚠️ 您没有记账权限")
+        return
 
-        # 置信度足够，直接记账
-        confirm_msg = _record_transaction_from_image(user_id, data)
-        await status_msg.edit_text(confirm_msg)
+    if not bill_records:
+        await update.message.reply_text("📊 暂无任何记账记录")
+        return
 
-    except Exception as e:
-        logger.error(f"图片处理异常: {e}")
-        await status_msg.edit_text(f"❌ 处理失败: {str(e)[:100]}")
+    total_in = sum(r['amount'] for r in bill_records if r['type'] == 'income')
+    total_out = sum(r['amount'] for r in bill_records if r['type'] == 'expense')
+    net = total_in - total_out
 
-# 处理用户对待确认记账的回复
-async def _handle_booking_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """  如果用户有待确认记账，处理 ✅/❌ 回复。返回 True 表示已处理。 """
-    pending = context.user_data.get('pending_booking')
-    if not pending:
-        return False
-    text = update.message.text.strip()
-    if text in ('✅', 'yes', '确认', 'ok', 'OK', '是'):
-        confirm_msg = _record_transaction_from_image(update.effective_chat.id, pending)
-        context.user_data.pop('pending_booking', None)
-        await update.message.reply_text(confirm_msg)
-        return True
-    elif text in ('❌', 'no', '取消', '否'):
-        context.user_data.pop('pending_booking', None)
-        await update.message.reply_text("❌ 已取消记账。您可以手动使用 /finance 记账。")
-        return True
-    return False
+    text = (
+        f"📊 全部账单汇总\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🟢 总入款: {total_in:.2f}\n"
+        f"🔴 总出款: {total_out:.2f}\n"
+        f"💰 净额: {net:.2f}\n"
+        f"📝 总笔数: {len(bill_records)}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"最近 30 条记录：\n"
+    )
+    for r in bill_records[-30:]:
+        icon = '🟢' if r['type'] == 'income' else '🔴'
+        note_str = f" ({r['note']})" if r.get('note') else ''
+        text += f"{icon} {r['amount']:.2f} {r['channel']}{note_str} [{r['date'][:16]}]\n"
+
+    if len(text) > 4000:
+        text = text[:4000] + "\n...(已截取)"
+    await update.message.reply_text(text)
 
 def main():
     threading.Thread(target=update_all_databases, daemon=True).start()
@@ -2525,7 +2544,8 @@ def main():
     app.add_handler(CommandHandler("removeuser", removeuser_command))
     app.add_handler(CommandHandler("listusers", listusers_command))
     app.add_handler(CallbackQueryHandler(finance_callback, pattern="^(select_finance_|mal_fin_|phi_fin_|adv_|mal_pay_|phi_pay_|mal_exp_|phi_exp_|mal_mch|phi_mch|mal_setfee_|phi_setfee_|mal_us_|phi_us_|mal_bet_|phi_bet_|mal_agt_|phi_agt_|main_finance_menu|fin_close)"))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(CommandHandler("bill", bill_command))
+    app.add_handler(CommandHandler("billall", billall_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.job_queue.run_repeating(send_security_reminder, interval=3600, first=10)
     app.job_queue.run_repeating(_poll_livechat_messages, interval=8, first=15)  # 每8秒轮询LiveChat新消息
