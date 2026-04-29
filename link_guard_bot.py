@@ -1700,11 +1700,15 @@ def save_keywords():
 def _livechat_headers():
     """构建 LiveChat API 请求头"""
     import base64
-    # PAT token format for Basic auth: encode "account_id:pat_token" or use PAT directly
-    # LiveChat v3.5 accepts the PAT token directly after 'Basic '
+    # Correct format: base64(account_id:pat_token)
+    credentials = f'{LIVECHAT_ACCOUNT_ID}:{LIVECHAT_PAT_TOKEN}'
+    encoded = base64.b64encode(credentials.encode('utf-8')).decode('utf-8')
+    # Extract region from PAT token prefix (e.g. "us-south1:..." -> "us-south1")
+    region = LIVECHAT_PAT_TOKEN.split(':')[0] if ':' in LIVECHAT_PAT_TOKEN else 'us-south1'
     return {
         'Content-Type': 'application/json',
-        'Authorization': f'Basic {LIVECHAT_PAT_TOKEN}',
+        'Authorization': f'Basic {encoded}',
+        'X-Region': region,
     }
 
 def _livechat_api_call(action, payload=None):
