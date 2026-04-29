@@ -1,0 +1,14 @@
+{
+  "build": {
+    "builder": "NIXPACKS"
+  },
+  "deploy": {
+    "startCommand": "python link_guard_bot.py",
+    "healthcheckPath": "/",
+    "healthcheckTimeout": 300
+  },
+  "environment": [
+    "BOT_TOKEN",
+    "OPENAI_API_KEY"
+  ]
+}
