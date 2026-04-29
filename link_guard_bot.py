@@ -46,10 +46,12 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '8629780885:AAFpEIAnMQglsnz0qzhrblfknqpgd122WH4')
 
 # ==================== OpenAI Client Initialization ====================
+# Uses Manus LLM proxy which supports gpt-4.1-mini and vision capabilities
 _OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY') or 'sk-Jj78vPntbRJxMR2NpL8ou7'
+_OPENAI_BASE_URL = os.environ.get('OPENAI_BASE_URL') or 'https://api.manus.im/api/llm-proxy/v1/'
 try:
-    ai_client = OpenAI(api_key=_OPENAI_API_KEY)
-    logger.info("OpenAI client initialized successfully.")
+    ai_client = OpenAI(api_key=_OPENAI_API_KEY, base_url=_OPENAI_BASE_URL)
+    logger.info(f"OpenAI client initialized. base_url={_OPENAI_BASE_URL}")
 except Exception as _e:
     ai_client = None
     logger.warning(f"OpenAI client initialization failed, AI features disabled: {_e}")
