@@ -8,7 +8,7 @@ import time
 import json
 import datetime
 from urllib.parse import urlparse, urljoin
-from openai import OpenAI
+# OpenAI removed - AI features disabled due to IP restriction on Railway
 from bs4 import BeautifulSoup
 from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -45,16 +45,8 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '8629780885:AAFpEIAnMQglsnz0qzhrblfknqpgd122WH4')
 
-# ==================== OpenAI Client Initialization ====================
-# Uses Manus LLM proxy which supports gpt-4.1-mini and vision capabilities
-_OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY') or 'sk-Jj78vPntbRJxMR2NpL8ou7'
-_OPENAI_BASE_URL = os.environ.get('OPENAI_BASE_URL') or 'https://api.manus.im/api/llm-proxy/v1/'
-try:
-    ai_client = OpenAI(api_key=_OPENAI_API_KEY, base_url=_OPENAI_BASE_URL)
-    logger.info(f"OpenAI client initialized. base_url={_OPENAI_BASE_URL}")
-except Exception as _e:
-    ai_client = None
-    logger.warning(f"OpenAI client initialization failed, AI features disabled: {_e}")
+# AI features disabled - no OpenAI dependency
+ai_client = None
 
 # ==================== 数据存储 ====================
 DATA_DIR = Path(os.environ.get('DATA_DIR', '/home/ubuntu/bot_data'))
@@ -1316,24 +1308,9 @@ def heuristic_check(url):
     return w
 
 import asyncio
-import concurrent.futures
-_ai_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
-
-def _ai_sync(url, db_f, heu_w):
-    try:
-        if ai_client is None:
-            return "AI 功能暂时不可用"
-        p = f"分析链接安全风险：\n链接:{url}\n数据库:{'; '.join(db_f) if db_f else '未命中'}\n启发式:{'; '.join(heu_w) if heu_w else '无'}\n给出风险等级和一句话总结（中文简洁）。"
-        r = ai_client.chat.completions.create(model="gpt-4.1-nano", messages=[{"role":"user","content":p}], max_tokens=100, temperature=0.3)
-        return r.choices[0].message.content.strip()
-    except: return "AI分析暂不可用"
 
 async def ai_analysis(url, db_f, heu_w):
-    try:
-        loop = asyncio.get_event_loop()
-        return await asyncio.wait_for(loop.run_in_executor(_ai_executor, _ai_sync, url, db_f, heu_w), timeout=8)
-    except asyncio.TimeoutError: return "AI分析超时"
-    except: return "AI分析暂不可用"
+    return ""
 
 # ==================== 安全提醒 ====================
 TIPS = [
@@ -1663,9 +1640,7 @@ async def handle_scrape_command(update: Update, context: ContextTypes.DEFAULT_TY
             extra_text = extra_text[:4000] + "\n...(已截取)"
         await update.message.reply_text(extra_text)
     
-    # AI总结
-    ai_summary = await ai_summarize_webpage(result)
-    await update.message.reply_text(f"🤖 AI 智能分析:\n━━━━━━━━━━━━━━━━━━━━\n{ai_summary}")
+    # AI summary removed - IP restriction on Railway
 
 # ==================== LiveChat 真人客服集成 ====================
 # LiveChat API 配置
@@ -2192,6 +2167,14 @@ async def _forward_to_livechat(update: Update, context: ContextTypes.DEFAULT_TYP
     
     return True
 
+def _match_keyword(text: str):
+    """检查文本是否匹配关键词，返回匹配的回复或 None"""
+    text_lower = text.lower().strip()
+    for kw, reply in livechat_keywords.items():
+        if kw in text_lower:
+            return reply
+    return None
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return
     
@@ -2225,10 +2208,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if e.type == 'text_link': urls.append(e.url)
             elif e.type == 'url': urls.append(text[e.offset:e.offset+e.length])
     if not urls:
-        # 没有链接，使用AI智能对话
-        chat_id = update.effective_chat.id
-        reply = await ai_chat(chat_id, text)
-        await update.message.reply_text(reply)
+        # 没有链接，检查关键词自动回复
+        matched = _match_keyword(text)
+        if matched:
+            await update.message.reply_text(matched)
+            return
+        # 非关键词非记账非链接，提示用户
+        await update.message.reply_text("请使用关键词查询，发送 /lk 查看可用关键词。\n记账请发送：入款/出款 渠道 金额")
         return
     # 检测到链接：先安全检测，然后提供爬取选项
     for url in list(set(urls)):
@@ -2246,11 +2232,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rpt.append("\n💡 发送 /scrape " + url + " 可爬取网页内容")
         # 先发送快速结果
         fast_msg = await update.message.reply_text("\n".join(rpt))
-        # AI异步追加
-        ai_r = await ai_analysis(url, db_f, heu_w)
-        try:
-            await fast_msg.edit_text("\n".join(rpt) + f"\n\n🤖 AI评估:\n{ai_r}")
-        except: pass
+        # AI analysis removed - IP restriction on Railway
 
 # ==================== 图片识别自动记账 ====================
 
@@ -2525,8 +2507,9 @@ def main():
     app = Application.builder().token(BOT_TOKEN).read_timeout(30).write_timeout(30).connect_timeout(30).pool_timeout(10).concurrent_updates(True).build()
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("finance", main_finance_menu))
-    app.add_handler(CommandHandler("ai", ai_command))
-    app.add_handler(CommandHandler("clear", clear_chat_command))
+    # AI commands removed
+    # app.add_handler(CommandHandler("ai", ai_command))
+    # app.add_handler(CommandHandler("clear", clear_chat_command))
     app.add_handler(CommandHandler("scrape", handle_scrape_command))
     app.add_handler(CommandHandler("setadmin", setadmin_command))
     app.add_handler(CommandHandler("livechat", livechat_command))
