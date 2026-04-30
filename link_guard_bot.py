@@ -1715,7 +1715,8 @@ def _livechat_send_message(chat_id, text):
             'type': 'message',
             'text': text,
             'visibility': 'all'
-        }
+        },
+        'attach_to_last_thread': True
     })
 
 def _livechat_start_chat():
