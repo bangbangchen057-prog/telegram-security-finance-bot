@@ -102,6 +102,33 @@ PHILIPPINES_DEFAULT_FEE_RATES = {
     "USDT": 1.0,
 }
 
+BRAZIL_PAYMENT_METHODS = ["PIX", "Boleto", "TED", "DOC", "Nubank", "PicPay", "Mercado Pago", "Bank Transfer", "Cash", "USDT"]
+BRAZIL_DEFAULT_FEE_RATES = {
+    "PIX": 0.0,
+    "Boleto": 1.0,
+    "TED": 0.5,
+    "DOC": 0.5,
+    "Nubank": 0.0,
+    "PicPay": 0.8,
+    "Mercado Pago": 0.8,
+    "Bank Transfer": 0.5,
+    "Cash": 0.0,
+    "USDT": 1.0,
+}
+
+# ==================== 汇率配置 ====================
+# 各币种对 USDT 的汇率（1 USDT = X 本地货币）
+EXCHANGE_RATES = {
+    "MYR": float(os.environ.get('RATE_MYR', '4.45')),   # 1 USDT ≈ 4.45 MYR
+    "PHP": float(os.environ.get('RATE_PHP', '56.0')),    # 1 USDT ≈ 56 PHP
+    "BRL": float(os.environ.get('RATE_BRL', '5.10')),    # 1 USDT ≈ 5.10 BRL
+}
+MODULE_CURRENCY = {
+    'malaysia_finance': 'MYR',
+    'philippines_finance': 'PHP',
+    'brazil_finance': 'BRL',
+}
+
 # ==================== 财务数据获取与初始化 ====================
 def get_user_finance_module(chat_id, module_name):
     chat_id_str = str(chat_id)
@@ -169,6 +196,41 @@ def get_user_finance_module(chat_id, module_name):
         if "expenses" not in d: d["expenses"] = []
         if "merchants" not in d: d["merchants"] = {}
         if "fee_rates" not in d: d["fee_rates"] = dict(PHILIPPINES_DEFAULT_FEE_RATES)
+        if "user_stats" not in d: d["user_stats"] = {"registered": 0, "first_deposit": 0, "total_depositors": 0}
+        if "betting" not in d: d["betting"] = {"records": []}
+        if "agent" not in d: d["agent"] = {
+            "deposit_fee_rate": 1.0,
+            "withdraw_fee_rate": 1.0,
+            "game_vendor_rate": 15.0,
+            "maintenance_fee": 0.0,
+            "bonus_records": [],
+            "settlements": [],
+        }
+
+    elif module_name == 'brazil_finance':
+        if module_name not in user_modules:
+            user_modules[module_name] = {
+                "balance": 0.0,
+                "transactions": [],
+                "expenses": [],
+                "merchants": {},
+                "fee_rates": dict(BRAZIL_DEFAULT_FEE_RATES),
+                "user_stats": {"registered": 0, "first_deposit": 0, "total_depositors": 0},
+                "betting": {"records": []},
+                "agent": {
+                    "deposit_fee_rate": 1.0,
+                    "withdraw_fee_rate": 1.0,
+                    "game_vendor_rate": 15.0,
+                    "maintenance_fee": 0.0,
+                    "bonus_records": [],
+                    "settlements": [],
+                }
+            }
+        # Ensure all keys exist for existing data
+        d = user_modules[module_name]
+        if "expenses" not in d: d["expenses"] = []
+        if "merchants" not in d: d["merchants"] = {}
+        if "fee_rates" not in d: d["fee_rates"] = dict(BRAZIL_DEFAULT_FEE_RATES)
         if "user_stats" not in d: d["user_stats"] = {"registered": 0, "first_deposit": 0, "total_depositors": 0}
         if "betting" not in d: d["betting"] = {"records": []}
         if "agent" not in d: d["agent"] = {
@@ -359,7 +421,9 @@ async def main_finance_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🇲🇾 马来西亚财务", callback_data="select_finance_malaysia")],
         [InlineKeyboardButton("🇵🇭 菲律宾财务", callback_data="select_finance_philippines")],
+        [InlineKeyboardButton("🇧🇷 巴西财务", callback_data="select_finance_brazil")],
         [InlineKeyboardButton("📢 广告财务", callback_data="select_finance_advertising")],
+        [InlineKeyboardButton("💱 汇率换算", callback_data="exchange_rate_menu")],
         [InlineKeyboardButton("❌ 关闭菜单", callback_data="fin_close")]
     ]
     if update.callback_query:
@@ -379,7 +443,14 @@ async def finance_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     s = calc_summary(ud)
     merchant_count = len(ud['merchants'])
 
-    module_prefix = "🇲🇾 马来西亚" if current_module == 'malaysia_finance' else "🇵🇭 菲律宾"
+    if current_module == 'malaysia_finance':
+        module_prefix = "🇲🇾 马来西亚"
+    elif current_module == 'philippines_finance':
+        module_prefix = "🇵🇭 菲律宾"
+    elif current_module == 'brazil_finance':
+        module_prefix = "🇧🇷 巴西"
+    else:
+        module_prefix = "🇲🇾 马来西亚"
 
     text = (
         f"{module_prefix}财务管理中心\n"
@@ -425,6 +496,28 @@ async def finance_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
+# ==================== 汇率换算菜单 ====================
+async def exchange_rate_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "💱 汇率换算中心\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"🇲🇾 MYR/USDT: {EXCHANGE_RATES['MYR']} (1 USDT = {EXCHANGE_RATES['MYR']} MYR)\n"
+        f"🇵🇭 PHP/USDT: {EXCHANGE_RATES['PHP']} (1 USDT = {EXCHANGE_RATES['PHP']} PHP)\n"
+        f"🇧🇷 BRL/USDT: {EXCHANGE_RATES['BRL']} (1 USDT = {EXCHANGE_RATES['BRL']} BRL)\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "点击下方按钮修改汇率："
+    )
+    keyboard = [
+        [InlineKeyboardButton("🇲🇾 修改 MYR 汇率", callback_data="set_rate_MYR")],
+        [InlineKeyboardButton("🇵🇭 修改 PHP 汇率", callback_data="set_rate_PHP")],
+        [InlineKeyboardButton("🇧🇷 修改 BRL 汇率", callback_data="set_rate_BRL")],
+        [InlineKeyboardButton("🔙 返回主菜单", callback_data="main_finance_menu")]
+    ]
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
 # ==================== 财务回调 ====================
 async def finance_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -443,6 +536,18 @@ async def finance_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if data.startswith("adv_"):
         await handle_ad_finance_callback(update, context)
+        return
+
+    if data == "exchange_rate_menu":
+        await exchange_rate_menu(update, context)
+        return
+
+    if data.startswith("set_rate_"):
+        currency = data[len("set_rate_"):]
+        context.user_data['fin_action'] = f'set_rate_{currency}'
+        context.user_data['awaiting_amount'] = True
+        current_rate = EXCHANGE_RATES.get(currency, 1.0)
+        await query.edit_message_text(f"当前 {currency}/USDT 汇率: {current_rate}\n(即 1 USDT = {current_rate} {currency})\n\n请输入新的汇率：")
         return
 
     current_module = context.user_data.get('current_finance_module')
@@ -464,6 +569,9 @@ async def finance_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif current_module == 'philippines_finance':
         PAYMENT_METHODS = PHILIPPINES_PAYMENT_METHODS
         DEFAULT_FEE_RATES = PHILIPPINES_DEFAULT_FEE_RATES
+    elif current_module == 'brazil_finance':
+        PAYMENT_METHODS = BRAZIL_PAYMENT_METHODS
+        DEFAULT_FEE_RATES = BRAZIL_DEFAULT_FEE_RATES
     else:
         # This should not happen if current_module is always set correctly
         await query.edit_message_text("未知财务模块。", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_finance_menu")]]))
@@ -848,6 +956,9 @@ async def finance_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ag = ud.get('agent', {})
         now = datetime.datetime.now()
         cm = now.strftime("%Y-%m")
+        # 全部总数据
+        all_deps = sum(t['amount'] for t in ud['transactions'] if t['type']=='deposit')
+        all_wits = sum(t['amount'] for t in ud['transactions'] if t['type']=='withdrawal')
         # 本月数据
         m_deps = sum(t['amount'] for t in ud['transactions'] if t['date'][:7]==cm and t['type']=='deposit')
         m_wits = sum(t['amount'] for t in ud['transactions'] if t['date'][:7]==cm and t['type']=='withdrawal')
@@ -862,12 +973,21 @@ async def finance_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         vendor_cut = game_profit * ag.get('game_vendor_rate', 15.0) / 100 if game_profit > 0 else 0
         maint = ag.get('maintenance_fee', 0)
         settlement = balance - dep_fee - wit_fee - m_bonus - vendor_cut - maint
+        # 汇率换算
+        currency = MODULE_CURRENCY.get(current_module, 'MYR')
+        rate = EXCHANGE_RATES.get(currency, 1.0)
+        all_deps_usdt = all_deps / rate if rate > 0 else 0
+        all_wits_usdt = all_wits / rate if rate > 0 else 0
+        settlement_usdt = settlement / rate if rate > 0 else 0
         text = (
-            f"💲 代理月结算 ({cm})\n"
+            f"💲 代理结算 ({cm})\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            f"📥 总存款: {m_deps:.2f}\n"
-            f"📤 总提款: {m_wits:.2f}\n"
-            f"💵 余额: {balance:.2f}\n"
+            f"📊 累计总存款: {all_deps:.2f} {currency} (≈ {all_deps_usdt:.2f} USDT)\n"
+            f"📊 累计总提款: {all_wits:.2f} {currency} (≈ {all_wits_usdt:.2f} USDT)\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"📥 本月存款: {m_deps:.2f}\n"
+            f"📤 本月提款: {m_wits:.2f}\n"
+            f"💵 本月余额: {balance:.2f}\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             f"➖ 入款费用 ({ag.get('deposit_fee_rate',1.0)}%): {dep_fee:.2f}\n"
             f"➖ 出款费用 ({ag.get('withdraw_fee_rate',1.0)}%): {wit_fee:.2f}\n"
@@ -876,7 +996,7 @@ async def finance_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"   (投注{m_bet:.2f} - 派奖{m_payout:.2f} = 游戏利润{game_profit:.2f})\n"
             f"➖ 维护费: {maint:.2f}\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            f"💰 结算余额: {settlement:.2f}\n"
+            f"💰 结算余额: {settlement:.2f} {currency} (≈ {settlement_usdt:.2f} USDT)\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             "公式: 余额 - 入款费用 - 出款费用\n"
             "     - 活动红利 - 厂商抽成 - 维护费\n"
@@ -988,6 +1108,27 @@ async def handle_finance_input(update: Update, context: ContextTypes.DEFAULT_TYP
         return False
 
     chat_id = update.effective_chat.id
+    action = context.user_data.get('fin_action', '')
+
+    # 汇率设置处理（不需要选择财务板块）
+    if action.startswith('set_rate_'):
+        currency = action[len('set_rate_'):]
+        try:
+            new_rate = float(update.message.text.strip())
+            if new_rate <= 0:
+                raise ValueError("汇率必须大于0")
+            EXCHANGE_RATES[currency] = new_rate
+            await update.message.reply_text(
+                f"✅ {currency}/USDT 汇率已更新为: {new_rate}\n(1 USDT = {new_rate} {currency})",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回汇率菜单", callback_data="exchange_rate_menu")]])
+            )
+        except ValueError:
+            await update.message.reply_text("输入格式错误，请输入数字，例如: 4.45")
+        finally:
+            context.user_data.pop('awaiting_amount', None)
+            context.user_data.pop('fin_action', None)
+        return True
+
     current_module = context.user_data.get('current_finance_module')
     if not current_module:
         await update.message.reply_text("请先选择一个财务板块。", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data="main_finance_menu")]]))
