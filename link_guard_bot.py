@@ -1648,7 +1648,7 @@ LIVECHAT_ACCOUNT_ID = os.environ.get('LIVECHAT_ACCOUNT_ID', '9340b42a-b5be-4d49-
 LIVECHAT_PAT_TOKEN = os.environ.get('LIVECHAT_PAT_TOKEN', 'us-south1:Kvcj7OvRRV5jAvajR3s2mK6c2OM')
 LIVECHAT_ENTITY_ID = os.environ.get('LIVECHAT_ENTITY_ID', 'bangbangchen057@gmail.com')
 LIVECHAT_LICENSE_ID = os.environ.get('LIVECHAT_LICENSE_ID', '100170061')
-ADMIN_CHAT_ID = int(os.environ.get('ADMIN_CHAT_ID', '0'))  # Will be set by /setadmin command
+ADMIN_CHAT_ID = int(os.environ.get('ADMIN_CHAT_ID', '7414281070'))  # Default to owner's chat ID
 
 LIVECHAT_API_BASE = 'https://api.livechatinc.com/v3.5/agent/action'
 
