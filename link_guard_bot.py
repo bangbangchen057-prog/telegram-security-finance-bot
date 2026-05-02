@@ -46,7 +46,7 @@ threading.Thread(target=_start_health_server, daemon=True).start()
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-BOT_TOKEN = os.environ.get('BOT_TOKEN', '8433512894:AAEYep9FGl0HKoOBOh0IIpdQWY8n5Ppajxc')
+BOT_TOKEN = os.environ.get('BOT_TOKEN', '')
 
 # ==================== 安全防护系统 ====================
 ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'bYwsop-cixba9-vuqwod')
@@ -96,7 +96,7 @@ def _record_failed_attempt(user_id: int):
 
 # AI 功能 - 使用 DeepSeek API (OpenAI 兼容)
 ai_client = OpenAI(
-    api_key=os.environ.get('DEEPSEEK_API_KEY', 'sk-417c7477a046424eac660ce67be6d67f'),
+    api_key=os.environ.get('DEEPSEEK_API_KEY', ''),
     base_url='https://api.deepseek.com'
 )
 
@@ -1636,41 +1636,69 @@ async def clear_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     CHAT_HISTORIES.pop(chat_id, None)
     await update.message.reply_text("✅ 对话记录已清除，可以开始新的对话了！")
 
-# ==================== AI 图片生成功能 ====================
+# ==================== AI 图片生成功能 (Replicate Flux Pro) ====================
+REPLICATE_TOKEN = os.environ.get('REPLICATE_API_TOKEN', '')
+
 async def img_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """处理 /img 命令，使用 Pollinations AI 生成图片"""
+    """处理 /img 命令，使用 Replicate Flux Pro 生成高质量图片"""
     if not context.args:
         await update.message.reply_text(
-            "🎨 AI 图片生成\n"
+            "🎨 AI 图片生成 (Flux Pro)\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             "用法: /img <图片描述>\n\n"
             "示例:\n"
             "  /img 一只可爱的猫咪在花园里\n"
             "  /img a futuristic city at sunset\n"
             "  /img 水墨画风格的山水风景\n\n"
-            "💡 描述越详细，生成效果越好！"
+            "💡 描述越详细，生成效果越好！\n"
+            "🚀 使用 Flux Pro 模型，效果接近 Midjourney"
         )
         return
 
     prompt = ' '.join(context.args)
-    await update.message.reply_text(f"🎨 正在生成图片...\n📝 描述: {prompt}\n⏳ 请稍候，通常需要10-30秒")
+    status_msg = await update.message.reply_text(f"🎨 正在生成高质量图片...\n📝 描述: {prompt}\n⏳ 请稍候，通常需要5-15秒")
     await update.message.chat.send_action('upload_photo')
 
     try:
-        encoded_prompt = quote(prompt)
-        image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=true"
-        response = requests.get(image_url, timeout=120)
-        response.raise_for_status()
+        # 创建预测
+        headers = {
+            'Authorization': f'Bearer {REPLICATE_TOKEN}',
+            'Content-Type': 'application/json'
+        }
+        data = {
+            'version': 'black-forest-labs/flux-1.1-pro',
+            'input': {
+                'prompt': prompt,
+                'aspect_ratio': '1:1'
+            }
+        }
+        r = requests.post('https://api.replicate.com/v1/predictions', headers=headers, json=data, timeout=30)
+        r.raise_for_status()
+        prediction = r.json()
+        prediction_url = prediction['urls']['get']
 
-        # 发送图片
-        from io import BytesIO
-        photo_bytes = BytesIO(response.content)
-        photo_bytes.name = 'generated.jpg'
-        await update.message.reply_photo(
-            photo=photo_bytes,
-            caption=f"🎨 AI 生成图片\n📝 {prompt}"
-        )
-    except requests.exceptions.Timeout:
+        # 轮询等待结果
+        for _ in range(60):  # 最多等待60秒
+            time.sleep(2)
+            r = requests.get(prediction_url, headers=headers, timeout=10)
+            result = r.json()
+            if result['status'] == 'succeeded':
+                image_url = result['output']
+                # 下载图片
+                img_response = requests.get(image_url, timeout=30)
+                img_response.raise_for_status()
+                from io import BytesIO
+                photo_bytes = BytesIO(img_response.content)
+                photo_bytes.name = 'generated.webp'
+                await update.message.reply_photo(
+                    photo=photo_bytes,
+                    caption=f"🎨 Flux Pro 生成图片\n📝 {prompt}"
+                )
+                await status_msg.delete()
+                return
+            elif result['status'] == 'failed':
+                raise Exception(result.get('error', '生成失败'))
+
         await update.message.reply_text("⏰ 图片生成超时，请稍后重试。")
     except Exception as e:
         logger.error(f"Image generation error: {e}")
