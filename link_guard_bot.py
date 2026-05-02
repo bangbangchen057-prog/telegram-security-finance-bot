@@ -91,10 +91,10 @@ def _record_failed_attempt(user_id: int):
     _failed_auth_attempts[user_id]['count'] += 1
     _failed_auth_attempts[user_id]['last_time'] = time.time()
 
-# AI 功能 - 使用 OpenAI 兼容 API
+# AI 功能 - 使用 DeepSeek API (OpenAI 兼容)
 ai_client = OpenAI(
-    api_key=os.environ.get('OPENAI_API_KEY', ''),
-    base_url=os.environ.get('OPENAI_BASE_URL', 'https://api.openai.com/v1')
+    api_key=os.environ.get('DEEPSEEK_API_KEY', 'sk-417c7477a046424eac660ce67be6d67f'),
+    base_url='https://api.deepseek.com'
 )
 
 # ==================== 数据存储 ====================
@@ -1584,7 +1584,7 @@ async def ai_chat(chat_id: int, user_message: str) -> str:
             CHAT_HISTORIES[chat_id] = CHAT_HISTORIES[chat_id][-MAX_HISTORY:]
         messages = [{"role": "system", "content": AI_SYSTEM_PROMPT}] + CHAT_HISTORIES[chat_id]
         r = ai_client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model="deepseek-chat",
             messages=messages,
             max_tokens=2000,
             temperature=0.7
@@ -1764,7 +1764,7 @@ async def ai_summarize_webpage(scrape_result: dict) -> str:
 3. 网站类型判断
 用中文简洁回复。"""
         r = ai_client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model="deepseek-chat",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=800,
             temperature=0.3
