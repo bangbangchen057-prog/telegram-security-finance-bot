@@ -43,7 +43,7 @@ threading.Thread(target=_start_health_server, daemon=True).start()
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-BOT_TOKEN = os.environ.get('BOT_TOKEN', '8629780885:AAFpEIAnMQglsnz0qzhrblfknqpgd122WH4')
+BOT_TOKEN = os.environ.get('BOT_TOKEN', '8629780885:AAF_Te7Y-kXCQ90hNunftiE58XbipCrn2bY')
 
 # ==================== 安全防护系统 ====================
 ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'bYwsop-cixba9-vuqwod')
