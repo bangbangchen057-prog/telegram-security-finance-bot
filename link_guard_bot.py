@@ -8,7 +8,7 @@ import time
 import json
 import datetime
 from urllib.parse import urlparse, urljoin
-# OpenAI removed - AI features disabled due to IP restriction on Railway
+from openai import OpenAI
 from bs4 import BeautifulSoup
 from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -91,8 +91,11 @@ def _record_failed_attempt(user_id: int):
     _failed_auth_attempts[user_id]['count'] += 1
     _failed_auth_attempts[user_id]['last_time'] = time.time()
 
-# AI features disabled - no OpenAI dependency
-ai_client = None
+# AI 功能 - 使用 OpenAI 兼容 API
+ai_client = OpenAI(
+    api_key=os.environ.get('OPENAI_API_KEY', ''),
+    base_url=os.environ.get('OPENAI_BASE_URL', 'https://api.openai.com/v1')
+)
 
 # ==================== 数据存储 ====================
 DATA_DIR = Path(os.environ.get('DATA_DIR', '/home/ubuntu/bot_data'))
