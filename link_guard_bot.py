@@ -45,6 +45,52 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '8629780885:AAFpEIAnMQglsnz0qzhrblfknqpgd122WH4')
 
+# ==================== 安全防护系统 ====================
+ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'bYwsop-cixba9-vuqwod')
+SECURITY_LOG_FILE = None  # Will be set after DATA_DIR
+_failed_auth_attempts = {}  # user_id -> {'count': int, 'last_time': float}
+_security_alerts = []  # List of security events
+MAX_FAILED_ATTEMPTS = 3  # Max failed password attempts before blocking
+BLOCK_DURATION = 3600  # Block duration in seconds (1 hour)
+
+def _log_security_event(event_type: str, user_id: int, details: str = ''):
+    """Log security events for audit trail."""
+    timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    event = {'time': timestamp, 'type': event_type, 'user_id': user_id, 'details': details}
+    _security_alerts.append(event)
+    # Keep only last 100 events in memory
+    if len(_security_alerts) > 100:
+        _security_alerts.pop(0)
+    # Write to file
+    try:
+        if SECURITY_LOG_FILE:
+            with open(SECURITY_LOG_FILE, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(event, ensure_ascii=False) + '\n')
+    except Exception:
+        pass
+    logger.warning(f"[SECURITY] {event_type}: user={user_id} {details}")
+
+def _is_user_blocked(user_id: int) -> bool:
+    """Check if user is blocked due to too many failed attempts."""
+    if user_id not in _failed_auth_attempts:
+        return False
+    info = _failed_auth_attempts[user_id]
+    if info['count'] >= MAX_FAILED_ATTEMPTS:
+        if time.time() - info['last_time'] < BLOCK_DURATION:
+            return True
+        else:
+            # Block expired, reset
+            del _failed_auth_attempts[user_id]
+            return False
+    return False
+
+def _record_failed_attempt(user_id: int):
+    """Record a failed authentication attempt."""
+    if user_id not in _failed_auth_attempts:
+        _failed_auth_attempts[user_id] = {'count': 0, 'last_time': 0}
+    _failed_auth_attempts[user_id]['count'] += 1
+    _failed_auth_attempts[user_id]['last_time'] = time.time()
+
 # AI features disabled - no OpenAI dependency
 ai_client = None
 
@@ -53,6 +99,7 @@ DATA_DIR = Path(os.environ.get('DATA_DIR', '/home/ubuntu/bot_data'))
 DATA_DIR.mkdir(exist_ok=True)
 SUBSCRIBERS_FILE = DATA_DIR / 'subscribers.json'
 FINANCE_FILE = DATA_DIR / 'finance.json'
+SECURITY_LOG_FILE = DATA_DIR / 'security_log.jsonl'
 
 def load_json(fp, default):
     try:
@@ -1886,10 +1933,63 @@ def _livechat_set_routing_status(status='accepting_chats'):
         'agent_id': LIVECHAT_ENTITY_ID
     })
 
-# /setadmin 命令 - 设置管理员
+# /setadmin 命令 - 设置管理员（需要密码验证）
 async def setadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ADMIN_CHAT_ID
-    ADMIN_CHAT_ID = update.effective_chat.id
+    user_id = update.effective_chat.id
+    
+    # Check if user is blocked
+    if _is_user_blocked(user_id):
+        _log_security_event('BLOCKED_ACCESS', user_id, 'Attempted /setadmin while blocked')
+        await update.message.reply_text("🚫 您已被临时封锁，请稍后再试。")
+        return
+    
+    # If already admin, just confirm
+    if user_id == ADMIN_CHAT_ID:
+        await update.message.reply_text("✅ 您已经是管理员。")
+        _livechat_set_routing_status('accepting_chats')
+        return
+    
+    # Require password
+    if not context.args:
+        _log_security_event('AUTH_ATTEMPT', user_id, 'No password provided for /setadmin')
+        await update.message.reply_text("🔐 请输入管理密码：\n用法: /setadmin <密码>")
+        return
+    
+    password = ' '.join(context.args)
+    if password != ADMIN_PASSWORD:
+        _record_failed_attempt(user_id)
+        _log_security_event('AUTH_FAILED', user_id, f'Wrong password attempt ({_failed_auth_attempts.get(user_id, {}).get("count", 0)}/{MAX_FAILED_ATTEMPTS})')
+        remaining = MAX_FAILED_ATTEMPTS - _failed_auth_attempts.get(user_id, {}).get('count', 0)
+        if remaining <= 0:
+            await update.message.reply_text("🚫 密码错误次数过多，您已被临时封锁1小时。")
+            # Alert current admin
+            if ADMIN_CHAT_ID:
+                try:
+                    user = update.effective_user
+                    alert_text = (
+                        f"🚨 安全警报！\n\n"
+                        f"用户 {user.full_name} (ID: {user_id}) "
+                        f"多次尝试获取管理员权限，已被封锁。\n"
+                        f"用户名: @{user.username if user.username else '无'}\n"
+                        f"时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    )
+                    await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=alert_text)
+                except Exception:
+                    pass
+        else:
+            await update.message.reply_text(f"❌ 密码错误。剩余尝试次数: {remaining}")
+        return
+    
+    # Password correct
+    old_admin = ADMIN_CHAT_ID
+    ADMIN_CHAT_ID = user_id
+    _log_security_event('ADMIN_CHANGED', user_id, f'Admin changed from {old_admin} to {user_id}')
+    
+    # Reset failed attempts for this user
+    if user_id in _failed_auth_attempts:
+        del _failed_auth_attempts[user_id]
+    
     await update.message.reply_text(
         f"✅ 已将您设为管理员\n"
         f"管理员 Chat ID: {ADMIN_CHAT_ID}\n\n"
@@ -1898,7 +1998,7 @@ async def setadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     # 设置 agent 为在线状态
     _livechat_set_routing_status('accepting_chats')
-    logger.info(f"Admin set to chat_id: {ADMIN_CHAT_ID}")
+    logger.info(f"Admin set to chat_id: {ADMIN_CHAT_ID} (password verified)")
 
 # /livechat 命令 - Telegram 用户请求真人客服
 async def livechat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2443,6 +2543,39 @@ async def listusers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"• {uid}\n"
     await update.message.reply_text(text)
 
+# /seclog 命令 - 查看安全日志（仅管理员）
+async def seclog_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != ADMIN_CHAT_ID:
+        _log_security_event('UNAUTHORIZED_SECLOG', update.effective_chat.id, 'Attempted to view security logs')
+        await update.message.reply_text("⚠️ 此命令仅管理员可用")
+        return
+    if not _security_alerts:
+        await update.message.reply_text("🛡️ 安全日志为空，暂无安全事件。")
+        return
+    text = "🛡️ 最近安全事件：\n━━━━━━━━━━━━━━━━━━━━\n"
+    for event in _security_alerts[-20:]:
+        text += f"[{event['time']}] {event['type']}\n  用户: {event['user_id']}\n  详情: {event['details']}\n\n"
+    if len(text) > 4000:
+        text = text[:4000] + "\n...(已截取)"
+    await update.message.reply_text(text)
+
+# /changepw 命令 - 修改管理密码（仅管理员）
+async def changepw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global ADMIN_PASSWORD
+    if update.effective_chat.id != ADMIN_CHAT_ID:
+        await update.message.reply_text("⚠️ 此命令仅管理员可用")
+        return
+    if not context.args:
+        await update.message.reply_text("用法: /changepw <新密码>")
+        return
+    new_pw = ' '.join(context.args)
+    if len(new_pw) < 8:
+        await update.message.reply_text("⚠️ 密码长度至少8位")
+        return
+    ADMIN_PASSWORD = new_pw
+    _log_security_event('PASSWORD_CHANGED', update.effective_chat.id, 'Admin password changed')
+    await update.message.reply_text("✅ 管理密码已更新。\n⚠️ 请记住新密码，重启后需在环境变量中同步更新。")
+
 # ==================== 文字记账功能 ====================
 BILL_FILE = DATA_DIR / 'bill_records.json'
 bill_records = load_json(BILL_FILE, [])
@@ -2654,6 +2787,8 @@ def main():
     # app.add_handler(CommandHandler("clear", clear_chat_command))
     app.add_handler(CommandHandler("scrape", handle_scrape_command))
     app.add_handler(CommandHandler("setadmin", setadmin_command))
+    app.add_handler(CommandHandler("seclog", seclog_command))
+    app.add_handler(CommandHandler("changepw", changepw_command))
     app.add_handler(CommandHandler("livechat", livechat_command))
     app.add_handler(CommandHandler("endchat", endchat_command))
     app.add_handler(CommandHandler("reply", reply_command))
