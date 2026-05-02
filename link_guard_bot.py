@@ -46,7 +46,14 @@ threading.Thread(target=_start_health_server, daemon=True).start()
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-BOT_TOKEN = os.environ.get('BOT_TOKEN', '')
+BOT_TOKEN = os.environ.get('BOT_TOKEN', '').strip()
+logger.info(f"BOT_TOKEN loaded: {'YES' if BOT_TOKEN else 'NO'} (length={len(BOT_TOKEN)})")
+if not BOT_TOKEN:
+    logger.error("BOT_TOKEN is empty! Check Railway environment variables.")
+    # Print all env vars starting with BOT for debugging
+    for k, v in os.environ.items():
+        if 'BOT' in k.upper() or 'TOKEN' in k.upper():
+            logger.info(f"ENV: {k}={v[:10]}...")
 
 # ==================== 安全防护系统 ====================
 ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'bYwsop-cixba9-vuqwod')
