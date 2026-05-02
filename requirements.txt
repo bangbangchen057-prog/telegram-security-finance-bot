@@ -3,3 +3,7 @@ requests
 beautifulsoup4
 lxml
 openai
+PyPDF2
+python-docx
+SpeechRecognition
+pydub
