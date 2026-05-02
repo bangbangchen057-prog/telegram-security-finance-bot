@@ -1599,23 +1599,31 @@ async def ai_chat(chat_id: int, user_message: str) -> str:
         return "抱歉，AI 暂时无法回复，请稍后再试。"
 
 async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🤖 AI 智能助手\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "直接发送消息即可与AI对话！\n\n"
-        "我可以帮你：\n"
-        "• 回答各种问题\n"
-        "• 财务分析与建议\n"
-        "• 网络安全咨询\n"
-        "• 商业数据分析\n"
-        "• 多语言翻译\n"
-        "• 编程帮助\n"
-        "• 数学计算\n"
-        "• 文案写作\n"
-        "• 知识问答\n"
-        "• 生活建议\n\n"
-        "发送 /clear 可以清除对话记录"
-    )
+    # If user provides a question after /ai, process it
+    user_text = ' '.join(context.args) if context.args else ''
+    if user_text.strip():
+        chat_id = update.effective_chat.id
+        await update.message.chat.send_action('typing')
+        reply = await ai_chat(chat_id, user_text)
+        await update.message.reply_text(reply)
+    else:
+        await update.message.reply_text(
+            "🤖 AI 智能助手\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "直接发送消息即可与AI对话！\n\n"
+            "我可以帮你：\n"
+            "• 回答各种问题\n"
+            "• 财务分析与建议\n"
+            "• 网络安全咨询\n"
+            "• 商业数据分析\n"
+            "• 多语言翻译\n"
+            "• 编程帮助\n"
+            "• 数学计算\n"
+            "• 文案写作\n"
+            "• 知识问答\n"
+            "• 生活建议\n\n"
+            "发送 /clear 可以清除对话记录"
+        )
 
 async def clear_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -1918,8 +1926,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if e.type == 'text_link': urls.append(e.url)
             elif e.type == 'url': urls.append(text[e.offset:e.offset+e.length])
     if not urls:
-        # 没有链接，非记账非财务，提示用户
-        await update.message.reply_text("请发送链接进行安全检测，或使用 /finance 进入财务管理。\n记账请发送：入款/出款 渠道 金额")
+        # 没有链接，非记账非财务，走AI对话
+        chat_id = update.effective_chat.id
+        await update.message.chat.send_action('typing')
+        reply = await ai_chat(chat_id, text)
+        await update.message.reply_text(reply)
         return
     # 检测到链接：先安全检测，然后提供爬取选项
     for url in list(set(urls)):
