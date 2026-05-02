@@ -2240,7 +2240,27 @@ async def billall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     threading.Thread(target=update_all_databases, daemon=True).start()
-    # 不等待数据库加载，直接启动机器人响应消息
+    
+    # Force clear any existing polling sessions before starting
+    import urllib.request
+    for attempt in range(5):
+        try:
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=true"
+            urllib.request.urlopen(url, timeout=10)
+            logger.info(f"Cleared webhook/pending updates (attempt {attempt+1})")
+            # Also call getUpdates with offset=-1 to clear
+            url2 = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset=-1&timeout=1"
+            urllib.request.urlopen(url2, timeout=5)
+            logger.info("Cleared pending getUpdates")
+            break
+        except Exception as e:
+            logger.warning(f"Clear attempt {attempt+1} failed: {e}")
+            time.sleep(3)
+    
+    # Wait a bit for any old instance to fully stop
+    logger.info("Waiting 10 seconds for old instances to stop...")
+    time.sleep(10)
+    
     from telegram.ext import Defaults
     app = Application.builder().token(BOT_TOKEN).read_timeout(30).write_timeout(30).connect_timeout(30).pool_timeout(10).concurrent_updates(True).build()
     app.add_handler(CommandHandler("start", start_command))
@@ -2262,7 +2282,7 @@ def main():
     app.job_queue.run_repeating(send_security_reminder, interval=3600, first=10)
     logger.info("Bot started...")
     print("Bot started...", flush=True)
-    app.run_polling(drop_pending_updates=True, poll_interval=0.5, timeout=10, allowed_updates=Update.ALL_TYPES)
+    app.run_polling(drop_pending_updates=True, poll_interval=1.0, timeout=15, allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
     main()
