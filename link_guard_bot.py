@@ -2245,9 +2245,9 @@ def main():
     app = Application.builder().token(BOT_TOKEN).read_timeout(30).write_timeout(30).connect_timeout(30).pool_timeout(10).concurrent_updates(True).build()
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("finance", main_finance_menu))
-    # AI commands removed
-    # app.add_handler(CommandHandler("ai", ai_command))
-    # app.add_handler(CommandHandler("clear", clear_chat_command))
+    # AI commands
+    app.add_handler(CommandHandler("ai", ai_command))
+    app.add_handler(CommandHandler("clear", clear_chat_command))
     app.add_handler(CommandHandler("scrape", handle_scrape_command))
     app.add_handler(CommandHandler("setadmin", setadmin_command))
     app.add_handler(CommandHandler("seclog", seclog_command))
