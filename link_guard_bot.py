@@ -7,11 +7,7 @@ import threading
 import time
 import json
 import datetime
-import base64
-import tempfile
-import io
 from urllib.parse import urlparse, urljoin, quote
-from openai import OpenAI
 from bs4 import BeautifulSoup
 from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -51,7 +47,6 @@ _DEFAULT_TOKEN = _b64.b64decode('ODYyOTc4MDg4NTpBQUZfVGU3WS1rWENROTBoTnVuZnRpRTU
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '').strip() or _DEFAULT_TOKEN
 logger.info(f"BOT_TOKEN loaded: {'YES' if BOT_TOKEN else 'NO'} (length={len(BOT_TOKEN)})")
 
-_DEFAULT_DS_KEY = _b64.b64decode('c2stNDE3Yzc0NzdhMDQ2NDI0ZWFjNjYwY2U2N2JlNmQ2N2Y=').decode()
 _DEFAULT_REP_TOKEN = _b64.b64decode('cjhfQjhKMFRIdG0xUWowM0JFSHh2cnl1cVQ3MmFwVFZXUTMzMjB5aw==').decode()
 
 # ==================== 安全防护系统 ====================
@@ -100,11 +95,6 @@ def _record_failed_attempt(user_id: int):
     _failed_auth_attempts[user_id]['count'] += 1
     _failed_auth_attempts[user_id]['last_time'] = time.time()
 
-# AI 功能 - 使用 DeepSeek API (OpenAI 兼容)
-ai_client = OpenAI(
-    api_key=os.environ.get('DEEPSEEK_API_KEY', '').strip() or _DEFAULT_DS_KEY,
-    base_url='https://api.deepseek.com'
-)
 
 # ==================== 数据存储 ====================
 DATA_DIR = Path(os.environ.get('DATA_DIR', '/home/ubuntu/bot_data'))
@@ -1507,11 +1497,6 @@ def heuristic_check(url):
     if len(ul) > 200: w.append("URL过长")
     return w
 
-import asyncio
-
-async def ai_analysis(url, db_f, heu_w):
-    return ""
-
 # ==================== 安全提醒 ====================
 TIPS = [
     "🛡 安全提醒：设备登录检查\n\n操作：设置->设备\n检查所有活跃会话，发现未知设备立即点击'终止所有其他会话'。",
@@ -1547,519 +1532,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total = len(urlhaus_urls)+len(openphish_urls)+len(threatfox_domains)+len(feodo_ips)
     w = (
         "🛡 PGone安全卫士 Pro\n━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🤖 AI智能助手：\n  直接发消息即可对话\n  支持财务分析/安全咨询/翻译/编程等\n\n"
-        "🎨 AI图片功能：\n  /img <描述> → AI生成图片\n  发送图片 → AI自动识别分析\n\n"
-        "🎤 语音功能：\n  发送语音 → 自动转文字+AI回复\n\n"
-        "📄 文档分析：\n  发送PDF/Word/TXT → AI提取内容并分析总结\n\n"
-        "🔒 安全功能：\n  6层链接检测+AI分析\n"
+        "🔒 安全功能：\n  6层链接检测\n"
         f"  威胁库: {total} 条 | 每30分钟同步\n  每小时安全提醒(已订阅)\n\n"
         "💰 财务功能：\n  🇲🇾 马来西亚 | 🇵🇭 菲律宾 | 📢 广告\n  存提款+余额+费用+利润\n  商户管理+投注派奖+代理结算\n\n"
-        "命令列表：\n  发链接 → 自动检测\n  发消息 → AI对话\n  发图片 → AI图片分析\n  发语音 → 语音转文字+AI回复\n  发文档 → 文档分析总结\n  /img <描述> → AI生成图片\n  /finance → 财务管理\n  /ai → AI助手说明\n  /clear → 清除对话记录\n  /setadmin → 设为管理员\n\n"
+        "命令列表：\n  发链接 → 自动检测\n  /scrape <网址> → 爬取网页公开内容\n  /finance → 财务管理\n  /setadmin → 设为管理员\n\n"
         "数据本地存储，不收集隐私。"
     )
     await update.message.reply_text(w)
     await main_finance_menu(update, context) # Changed to main_finance_menu
-
-# ==================== AI 智能对话 ====================
-CHAT_HISTORIES = {}  # chat_id -> list of messages
-MAX_HISTORY = 40  # 保留最近40条对话
-
-AI_SYSTEM_PROMPT = """你是 PGone安全卫士 Pro，一个顶级AI智能助手。你由GPT-4.1驱动，具备最强大的语言理解和推理能力。
-
-你的核心能力：
-1. 深度分析：能够深入分析复杂问题，提供多角度、有洞察力的解答
-2. 财务专家：精通财务分析、投资策略、风险评估、利润优化、税务规划
-3. 网络安全专家：威胁分析、漏洞评估、安全架构、隐私保护、反欺诈
-4. 商业顾问：市场分析、竞争策略、运营优化、增长黑客、商业模式设计
-5. 技术专家：编程、架构设计、数据库、API开发、系统设计
-6. 数据分析：统计分析、趋势预测、报表解读、KPI优化
-7. 多语言专家：精通中文、英文、马来语、菲律宾语等多语言翻译和写作
-8. 创意写作：文案策划、营销文案、报告撰写、内容创作
-9. 法律顾问：合同分析、合规建议、风险提示
-10. 生活管家：旅行规划、健康建议、时间管理、人际关系
-
-回答规则：
-- 默认用中文回复，用户用其他语言则用对应语言
-- 回答要专业、有深度、有条理
-- 提供具体可操作的建议，而不是笼统的建议
-- 当涉及重要决策时，主动提示风险
-- 保持友好但专业的语气"""
-
-def _build_llama_prompt(messages: list) -> str:
-    """将 OpenAI 格式的 messages 列表转换为 Llama 3 格式的 prompt 字符串。"""
-    parts = []
-    for msg in messages:
-        role = msg.get('role', 'user')
-        content = msg.get('content', '')
-        if role == 'system':
-            parts.append(f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n{content}<|eot_id|>")
-        elif role == 'user':
-            parts.append(f"<|start_header_id|>user<|end_header_id|>\n\n{content}<|eot_id|>")
-        elif role == 'assistant':
-            parts.append(f"<|start_header_id|>assistant<|end_header_id|>\n\n{content}<|eot_id|>")
-    parts.append("<|start_header_id|>assistant<|end_header_id|>\n\n")
-    return ''.join(parts)
-
-
-def _call_replicate_llama_sync(prompt: str) -> str:
-    """同步调用 Replicate meta/meta-llama-3.1-405b-instruct，轮询等待结果。"""
-    rep_token = os.environ.get('REPLICATE_API_TOKEN', '').strip() or _DEFAULT_REP_TOKEN
-    headers = {
-        'Authorization': f'Bearer {rep_token}',
-        'Content-Type': 'application/json'
-    }
-    payload = {
-        'input': {
-            'prompt': prompt,
-            'max_tokens': 2048,
-            'temperature': 0.7,
-            'stop': ['<|eot_id|>', '<|end_of_text|>']
-        }
-    }
-    # 创建预测任务
-    create_resp = requests.post(
-        'https://api.replicate.com/v1/models/meta/meta-llama-3.1-405b-instruct/predictions',
-        headers=headers,
-        json=payload,
-        timeout=30
-    )
-    create_resp.raise_for_status()
-    prediction = create_resp.json()
-    prediction_id = prediction.get('id')
-    if not prediction_id:
-        raise ValueError(f"Replicate 未返回 prediction id: {prediction}")
-
-    # 轮询等待结果（最多等待 90 秒，每 3 秒轮询一次）
-    poll_url = f'https://api.replicate.com/v1/predictions/{prediction_id}'
-    for _ in range(30):
-        time.sleep(3)
-        poll_resp = requests.get(poll_url, headers=headers, timeout=15)
-        poll_resp.raise_for_status()
-        result = poll_resp.json()
-        status = result.get('status')
-        if status == 'succeeded':
-            output = result.get('output')
-            if isinstance(output, list):
-                return ''.join(output).strip()
-            return str(output).strip()
-        elif status in ('failed', 'canceled'):
-            raise ValueError(f"Replicate 预测失败: {result.get('error', status)}")
-        # 状态为 starting / processing，继续轮询
-    raise TimeoutError("Replicate Llama 405B 响应超时（90秒）")
-
-
-async def ai_chat(chat_id: int, user_message: str) -> str:
-    if ai_client is None:
-        return "AI 功能暂时不可用"
-    # 维护对话历史
-    if chat_id not in CHAT_HISTORIES:
-        CHAT_HISTORIES[chat_id] = []
-    CHAT_HISTORIES[chat_id].append({"role": "user", "content": user_message})
-    if len(CHAT_HISTORIES[chat_id]) > MAX_HISTORY:
-        CHAT_HISTORIES[chat_id] = CHAT_HISTORIES[chat_id][-MAX_HISTORY:]
-    messages = [{"role": "system", "content": AI_SYSTEM_PROMPT}] + CHAT_HISTORIES[chat_id]
-
-    reply = None
-    # 优先使用 Replicate Llama 3.1 405B
-    try:
-        import asyncio
-        loop = asyncio.get_event_loop()
-        prompt_str = _build_llama_prompt(messages)
-        reply = await loop.run_in_executor(None, _call_replicate_llama_sync, prompt_str)
-        logger.info(f"ai_chat: Llama 3.1 405B 成功响应 (chat_id={chat_id})")
-    except Exception as e:
-        logger.warning(f"ai_chat: Replicate Llama 失败，回退到 DeepSeek: {e}")
-        reply = None
-
-    # 回退到 DeepSeek
-    if not reply:
-        try:
-            r = ai_client.chat.completions.create(
-                model="deepseek-chat",
-                messages=messages,
-                max_tokens=2000,
-                temperature=0.7
-            )
-            reply = r.choices[0].message.content.strip()
-            logger.info(f"ai_chat: DeepSeek 备用成功响应 (chat_id={chat_id})")
-        except Exception as e:
-            logger.error(f"ai_chat: DeepSeek 备用也失败: {e}")
-            return "抱歉，AI 暂时无法回复，请稍后再试。"
-
-    CHAT_HISTORIES[chat_id].append({"role": "assistant", "content": reply})
-    if len(CHAT_HISTORIES[chat_id]) > MAX_HISTORY:
-        CHAT_HISTORIES[chat_id] = CHAT_HISTORIES[chat_id][-MAX_HISTORY:]
-    return reply
-
-async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # If user provides a question after /ai, process it
-    user_text = ' '.join(context.args) if context.args else ''
-    if user_text.strip():
-        chat_id = update.effective_chat.id
-        await update.message.chat.send_action('typing')
-        reply = await ai_chat(chat_id, user_text)
-        await update.message.reply_text(reply)
-    else:
-        await update.message.reply_text(
-            "🤖 AI 智能助手\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "直接发送消息即可与AI对话！\n\n"
-            "我可以帮你：\n"
-            "• 回答各种问题\n"
-            "• 财务分析与建议\n"
-            "• 网络安全咨询\n"
-            "• 商业数据分析\n"
-            "• 多语言翻译\n"
-            "• 编程帮助\n"
-            "• 数学计算\n"
-            "• 文案写作\n"
-            "• 知识问答\n"
-            "• 生活建议\n\n"
-            "发送 /clear 可以清除对话记录"
-        )
-
-async def clear_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    CHAT_HISTORIES.pop(chat_id, None)
-    await update.message.reply_text("✅ 对话记录已清除，可以开始新的对话了！")
-
-# ==================== AI 图片生成功能 (Replicate Flux Pro) ====================
-REPLICATE_TOKEN = os.environ.get('REPLICATE_API_TOKEN', '').strip() or _DEFAULT_REP_TOKEN
-
-async def img_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """处理 /img 命令，使用 Replicate Flux Pro 生成高质量图片"""
-    if not context.args:
-        await update.message.reply_text(
-            "🎨 AI 图片生成 (Flux Pro)\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "用法: /img <图片描述>\n\n"
-            "示例:\n"
-            "  /img 一只可爱的猫咪在花园里\n"
-            "  /img a futuristic city at sunset\n"
-            "  /img 水墨画风格的山水风景\n\n"
-            "💡 描述越详细，生成效果越好！\n"
-            "🚀 使用 Flux Pro 模型，效果接近 Midjourney"
-        )
-        return
-
-    prompt = ' '.join(context.args)
-    status_msg = await update.message.reply_text(f"🎨 正在生成高质量图片...\n📝 描述: {prompt}\n⏳ 请稍候，通常需要5-15秒")
-    await update.message.chat.send_action('upload_photo')
-
-    try:
-        # 创建预测
-        headers = {
-            'Authorization': f'Bearer {REPLICATE_TOKEN}',
-            'Content-Type': 'application/json'
-        }
-        data = {
-            'version': 'black-forest-labs/flux-1.1-pro',
-            'input': {
-                'prompt': prompt,
-                'aspect_ratio': '1:1'
-            }
-        }
-        r = requests.post('https://api.replicate.com/v1/predictions', headers=headers, json=data, timeout=30)
-        r.raise_for_status()
-        prediction = r.json()
-        prediction_url = prediction['urls']['get']
-
-        # 轮询等待结果
-        for _ in range(60):  # 最多等待60秒
-            time.sleep(2)
-            r = requests.get(prediction_url, headers=headers, timeout=10)
-            result = r.json()
-            if result['status'] == 'succeeded':
-                image_url = result['output']
-                # 下载图片
-                img_response = requests.get(image_url, timeout=30)
-                img_response.raise_for_status()
-                from io import BytesIO
-                photo_bytes = BytesIO(img_response.content)
-                photo_bytes.name = 'generated.webp'
-                await update.message.reply_photo(
-                    photo=photo_bytes,
-                    caption=f"🎨 Flux Pro 生成图片\n📝 {prompt}"
-                )
-                await status_msg.delete()
-                return
-            elif result['status'] == 'failed':
-                raise Exception(result.get('error', '生成失败'))
-
-        await update.message.reply_text("⏰ 图片生成超时，请稍后重试。")
-    except Exception as e:
-        logger.error(f"Image generation error: {e}")
-        await update.message.reply_text(f"❌ 图片生成失败: {str(e)}\n请稍后重试。")
-
-# ==================== AI 图片识别/分析功能 ====================
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """处理用户发送的图片，使用 DeepSeek Vision API 分析图片内容"""
-    if not update.message or not update.message.photo:
-        return
-
-    await update.message.reply_text("🔍 正在分析图片内容，请稍候...")
-    await update.message.chat.send_action('typing')
-
-    try:
-        # 获取最大尺寸的图片
-        photo = update.message.photo[-1]
-        file = await context.bot.get_file(photo.file_id)
-
-        # 下载图片
-        photo_bytes = await file.download_as_bytearray()
-
-        # 转换为 base64
-        b64_image = base64.b64encode(bytes(photo_bytes)).decode('utf-8')
-
-        # 获取用户附带的文字说明（caption）
-        user_text = update.message.caption or "请详细描述这张图片的内容，包括场景、物体、文字、颜色等所有可见信息。"
-
-        # 使用 DeepSeek Vision API 分析
-        chat_id = update.effective_chat.id
-        messages = [
-            {"role": "system", "content": "你是一个专业的图片分析助手。请用中文详细分析用户发送的图片内容。"},
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{b64_image}"
-                        }
-                    },
-                    {
-                        "type": "text",
-                        "text": user_text
-                    }
-                ]
-            }
-        ]
-
-        response = ai_client.chat.completions.create(
-            model="deepseek-chat",
-            messages=messages,
-            max_tokens=2000,
-            temperature=0.7
-        )
-        reply = response.choices[0].message.content.strip()
-
-        # 保存到对话历史
-        if chat_id not in CHAT_HISTORIES:
-            CHAT_HISTORIES[chat_id] = []
-        CHAT_HISTORIES[chat_id].append({"role": "user", "content": f"[用户发送了一张图片] {user_text}"})
-        CHAT_HISTORIES[chat_id].append({"role": "assistant", "content": reply})
-        if len(CHAT_HISTORIES[chat_id]) > MAX_HISTORY:
-            CHAT_HISTORIES[chat_id] = CHAT_HISTORIES[chat_id][-MAX_HISTORY:]
-
-        await update.message.reply_text(f"🖼 图片分析结果：\n━━━━━━━━━━━━━━━━━━━━\n{reply}")
-    except Exception as e:
-        logger.error(f"Photo analysis error: {e}")
-        await update.message.reply_text(f"❌ 图片分析失败: {str(e)}\n请稍后重试。")
-
-# ==================== 语音转文字功能 ====================
-async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """处理用户发送的语音消息，转为文字并用 AI 回复"""
-    if not update.message:
-        return
-
-    voice = update.message.voice or update.message.audio
-    if not voice:
-        return
-
-    await update.message.reply_text("🎤 正在识别语音内容，请稍候...")
-    await update.message.chat.send_action('typing')
-
-    tmp_ogg = None
-    tmp_wav = None
-    try:
-        # 下载语音文件
-        file = await context.bot.get_file(voice.file_id)
-        voice_bytes = await file.download_as_bytearray()
-
-        # 保存为临时文件
-        tmp_ogg = tempfile.NamedTemporaryFile(suffix='.ogg', delete=False)
-        tmp_ogg.write(bytes(voice_bytes))
-        tmp_ogg.close()
-
-        # 使用 pydub 转换为 wav 格式
-        from pydub import AudioSegment
-        audio = AudioSegment.from_file(tmp_ogg.name)
-        tmp_wav = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
-        tmp_wav.close()
-        audio.export(tmp_wav.name, format='wav')
-
-        # 使用 SpeechRecognition 识别
-        import speech_recognition as sr
-        recognizer = sr.Recognizer()
-        with sr.AudioFile(tmp_wav.name) as source:
-            audio_data = recognizer.record(source)
-
-        # 尝试多语言识别
-        recognized_text = None
-        for lang in ['zh-CN', 'en-US', 'ms-MY']:
-            try:
-                recognized_text = recognizer.recognize_google(audio_data, language=lang)
-                if recognized_text:
-                    break
-            except sr.UnknownValueError:
-                continue
-            except sr.RequestError as e:
-                logger.error(f"Google Speech API error for {lang}: {e}")
-                continue
-
-        if not recognized_text:
-            await update.message.reply_text("❌ 无法识别语音内容，请尝试：\n• 说话更清晰\n• 减少背景噪音\n• 发送更长的语音")
-            return
-
-        # 显示识别结果
-        await update.message.reply_text(f"🎤 语音识别结果：\n━━━━━━━━━━━━━━━━━━━━\n{recognized_text}\n━━━━━━━━━━━━━━━━━━━━\n💬 正在用 AI 回复...")
-
-        # 发给 AI 对话
-        chat_id = update.effective_chat.id
-        await update.message.chat.send_action('typing')
-        reply = await ai_chat(chat_id, recognized_text)
-        await update.message.reply_text(f"🤖 AI 回复：\n{reply}")
-
-    except ImportError as e:
-        logger.error(f"Voice import error: {e}")
-        await update.message.reply_text("❌ 语音识别模块未安装，请联系管理员。")
-    except Exception as e:
-        logger.error(f"Voice processing error: {e}")
-        await update.message.reply_text(f"❌ 语音处理失败: {str(e)}\n请稍后重试。")
-    finally:
-        # 清理临时文件
-        try:
-            if tmp_ogg and os.path.exists(tmp_ogg.name):
-                os.unlink(tmp_ogg.name)
-            if tmp_wav and os.path.exists(tmp_wav.name):
-                os.unlink(tmp_wav.name)
-        except Exception:
-            pass
-
-# ==================== 文档分析功能 ====================
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """处理用户发送的文档（PDF/Word），提取内容并用 AI 分析总结"""
-    if not update.message or not update.message.document:
-        return
-
-    doc = update.message.document
-    file_name = doc.file_name or 'unknown'
-    file_ext = file_name.lower().rsplit('.', 1)[-1] if '.' in file_name else ''
-
-    # 检查文件类型
-    supported_types = ['pdf', 'docx', 'doc', 'txt']
-    if file_ext not in supported_types:
-        await update.message.reply_text(
-            f"📄 暂不支持 .{file_ext} 格式\n\n"
-            f"支持的文档格式：\n"
-            f"• PDF (.pdf)\n"
-            f"• Word (.docx)\n"
-            f"• 文本文件 (.txt)\n\n"
-            f"请转换格式后重新发送。"
-        )
-        return
-
-    # 检查文件大小（限制20MB）
-    if doc.file_size and doc.file_size > 20 * 1024 * 1024:
-        await update.message.reply_text("❌ 文件过大（超过20MB），请发送较小的文件。")
-        return
-
-    await update.message.reply_text(f"📄 正在分析文档: {file_name}\n⏳ 请稍候...")
-    await update.message.chat.send_action('typing')
-
-    tmp_file = None
-    try:
-        # 下载文件
-        file = await context.bot.get_file(doc.file_id)
-        file_bytes = await file.download_as_bytearray()
-
-        extracted_text = ''
-
-        if file_ext == 'pdf':
-            # 使用 PyPDF2 提取 PDF 文字
-            import PyPDF2
-            pdf_reader = PyPDF2.PdfReader(io.BytesIO(bytes(file_bytes)))
-            pages_text = []
-            for i, page in enumerate(pdf_reader.pages):
-                page_text = page.extract_text()
-                if page_text:
-                    pages_text.append(f"--- 第 {i+1} 页 ---\n{page_text}")
-            extracted_text = '\n'.join(pages_text)
-            page_count = len(pdf_reader.pages)
-
-        elif file_ext in ['docx', 'doc']:
-            # 使用 python-docx 提取 Word 文档
-            import docx
-            tmp_file = tempfile.NamedTemporaryFile(suffix=f'.{file_ext}', delete=False)
-            tmp_file.write(bytes(file_bytes))
-            tmp_file.close()
-            document = docx.Document(tmp_file.name)
-            paragraphs = [p.text for p in document.paragraphs if p.text.strip()]
-            extracted_text = '\n'.join(paragraphs)
-            page_count = max(1, len(paragraphs) // 30)  # 估算页数
-
-        elif file_ext == 'txt':
-            # 直接读取文本文件
-            extracted_text = bytes(file_bytes).decode('utf-8', errors='ignore')
-            page_count = max(1, len(extracted_text) // 2000)
-
-        if not extracted_text.strip():
-            await update.message.reply_text("❌ 无法从文档中提取文字内容。\n可能是扫描版PDF或加密文档。")
-            return
-
-        # 截取内容（DeepSeek 有 token 限制）
-        max_chars = 8000
-        if len(extracted_text) > max_chars:
-            extracted_text = extracted_text[:max_chars] + '\n...(内容已截取，仅分析前部分)'
-
-        # 获取用户的分析要求
-        user_request = update.message.caption or '请对这份文档进行全面分析和总结'
-
-        # 发给 DeepSeek 分析
-        analysis_prompt = (
-            f"以下是从文档 '{file_name}' 中提取的内容：\n\n"
-            f"{extracted_text}\n\n"
-            f"用户要求: {user_request}\n\n"
-            f"请对以上文档内容进行：\n"
-            f"1. 内容概要总结\n"
-            f"2. 关键信息提取\n"
-            f"3. 重要数据/观点整理\n"
-            f"4. 如有需要，给出建议或分析"
-        )
-
-        chat_id = update.effective_chat.id
-        reply = await ai_chat(chat_id, analysis_prompt)
-
-        result_text = (
-            f"📄 文档分析报告\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"📁 文件: {file_name}\n"
-            f"📊 页数: 约 {page_count} 页\n"
-            f"📝 提取字数: {len(extracted_text)} 字\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"{reply}"
-        )
-
-        # 如果回复太长，分段发送
-        if len(result_text) > 4000:
-            parts = [result_text[i:i+4000] for i in range(0, len(result_text), 4000)]
-            for part in parts:
-                await update.message.reply_text(part)
-        else:
-            await update.message.reply_text(result_text)
-
-    except ImportError as e:
-        logger.error(f"Document import error: {e}")
-        await update.message.reply_text(f"❌ 文档处理模块未安装: {str(e)}\n请联系管理员。")
-    except Exception as e:
-        logger.error(f"Document processing error: {e}")
-        await update.message.reply_text(f"❌ 文档分析失败: {str(e)}\n请稍后重试。")
-    finally:
-        try:
-            if tmp_file and os.path.exists(tmp_file.name):
-                os.unlink(tmp_file.name)
-        except Exception:
-            pass
 
 # ==================== 网页爬取功能 ====================
 async def scrape_website(url: str) -> dict:
@@ -2171,40 +1651,6 @@ async def scrape_website(url: str) -> dict:
     except Exception as e:
         return {'success': False, 'error': f'爬取失败: {str(e)[:100]}'}
 
-async def ai_summarize_webpage(scrape_result: dict) -> str:
-    """用AI总结网页内容"""
-    if ai_client is None:
-        return "AI 功能暂时不可用"
-    try:
-        content = scrape_result.get('content', '')[:2000]
-        tables = '\n'.join(scrape_result.get('tables', []))[:500]
-        prompt = f"""请分析并总结以下网页内容：
-
-标题: {scrape_result.get('title', '')}
-描述: {scrape_result.get('meta_desc', '')}
-
-正文内容:
-{content}
-
-表格数据:
-{tables}
-
-请提供：
-1. 网站主要内容概述（2-3句）
-2. 关键信息提取（列出重要数据点）
-3. 网站类型判断
-用中文简洁回复。"""
-        r = ai_client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=800,
-            temperature=0.3
-        )
-        return r.choices[0].message.content.strip()
-    except Exception as e:
-        logger.error(f"AI summarize error: {e}")
-        return "AI总结暂不可用"
-
 async def handle_scrape_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """\u5904\u7406 /scrape \u547d\u4ee4"""
     if not context.args:
@@ -2217,7 +1663,6 @@ async def handle_scrape_command(update: Update, context: ContextTypes.DEFAULT_TY
             "• 提取网页标题、正文内容\n"
             "• 提取链接、图片、表格\n"
             "• 提取表单字段\n"
-            "• AI 智能内容总结\n"
             "• 自动安全检测"
         )
         return
@@ -2270,7 +1715,6 @@ async def handle_scrape_command(update: Update, context: ContextTypes.DEFAULT_TY
             extra_text = extra_text[:4000] + "\n...(已截取)"
         await update.message.reply_text(extra_text)
     
-    # AI summary removed - IP restriction on Railway
 
 # ==================== 管理员配置 ====================
 ADMIN_CHAT_ID = int(os.environ.get('ADMIN_CHAT_ID', '7414281070'))  # Default to owner's chat ID
@@ -2357,11 +1801,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if e.type == 'text_link': urls.append(e.url)
             elif e.type == 'url': urls.append(text[e.offset:e.offset+e.length])
     if not urls:
-        # 没有链接，非记账非财务，走AI对话
-        chat_id = update.effective_chat.id
-        await update.message.chat.send_action('typing')
-        reply = await ai_chat(chat_id, text)
-        await update.message.reply_text(reply)
+        # 没有链接，且不是记账或财务输入时不做处理。
         return
     # 检测到链接：先安全检测，然后提供爬取选项
     for url in list(set(urls)):
@@ -2379,7 +1819,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rpt.append("\n💡 发送 /scrape " + url + " 可爬取网页内容")
         # 先发送快速结果
         fast_msg = await update.message.reply_text("\n".join(rpt))
-        # AI analysis removed - IP restriction on Railway
 
 # ==================== 图片识别自动记账 ====================
 
@@ -2707,9 +2146,6 @@ def main():
     app = Application.builder().token(BOT_TOKEN).read_timeout(30).write_timeout(30).connect_timeout(30).pool_timeout(10).concurrent_updates(True).build()
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("finance", main_finance_menu))
-    # AI commands
-    app.add_handler(CommandHandler("ai", ai_command))
-    app.add_handler(CommandHandler("clear", clear_chat_command))
     app.add_handler(CommandHandler("scrape", handle_scrape_command))
     app.add_handler(CommandHandler("setadmin", setadmin_command))
     app.add_handler(CommandHandler("seclog", seclog_command))
@@ -2720,11 +2156,6 @@ def main():
     app.add_handler(CallbackQueryHandler(finance_callback, pattern="^(select_finance_|mal_fin_|phi_fin_|adv_|mal_pay_|phi_pay_|mal_exp_|phi_exp_|mal_mch|phi_mch|mal_setfee_|phi_setfee_|mal_us_|phi_us_|mal_bet_|phi_bet_|mal_agt_|phi_agt_|main_finance_menu|fin_close)"))
     app.add_handler(CommandHandler("bill", bill_command))
     app.add_handler(CommandHandler("billall", billall_command))
-    app.add_handler(CommandHandler("img", img_command))
-    # AI 高级功能 handlers（图片/语音/文档必须在 TEXT handler 之前注册）
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.job_queue.run_repeating(send_security_reminder, interval=3600, first=10)
     logger.info("Bot started...")
